@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meshchat-windows"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "meshtastic>=2.5.0,<3",
+    "PySide6>=6.7,<7",
+    "PyPubSub>=4.0",          # used directly by meshtastic and our controller
+    "platformdirs>=4,<5",
+    "pyqtgraph>=0.13",
+    "numpy>=1.26",
+]
+
+[project.scripts]
+meshchat = "meshchat.app:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<10",
+    "pytest-timeout>=2,<3",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "pyinstaller>=6,<7",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Include the Leaflet web assets in the installed package
+[tool.setuptools.package-data]
+"meshchat.ui.map" = ["web/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+timeout = 30
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true

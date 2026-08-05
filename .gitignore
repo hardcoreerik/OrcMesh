@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+
+# Vendored web assets — fetched by scripts/fetch_vendors.py
+src/meshchat/ui/map/web/vendor/
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Local data — may contain node identities, positions, and message history
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

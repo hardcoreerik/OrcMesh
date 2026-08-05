@@ -1,0 +1,111 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #070D1F;
+  font-family: "Segoe UI", Consolas, sans-serif;
+}
+
+#map {
+  width: 100vw;
+  height: calc(100vh - 28px);
+}
+
+/* Dark theme (default): shift the dark CARTO tiles slightly cooler/deeper to
+   match the navy app theme, then counter-rotate markers/popups/controls so
+   their colors aren't affected by that shift. */
+body.theme-dark #map {
+  filter: hue-rotate(185deg) saturate(0.7) brightness(0.9);
+}
+body.theme-dark .leaflet-pane.leaflet-marker-pane,
+body.theme-dark .leaflet-pane.leaflet-popup-pane,
+body.theme-dark .leaflet-control-container {
+  filter: hue-rotate(-185deg) saturate(1.43) brightness(1.11);
+}
+
+/* Light theme: CARTO Positron tiles are already light/neutral — no filter needed. */
+body.theme-light #map {
+  filter: none;
+}
+
+/* Leaflet's own default container background is light gray — shown whenever
+   a tile hasn't loaded yet (or fails to load, e.g. no network reachability
+   from the QtWebEngine process). Override it so markers stay visible and
+   on-theme even with no basemap imagery. */
+body.theme-dark .leaflet-container {
+  background: #070D1F !important;
+}
+body.theme-light .leaflet-container {
+  background: #E8ECF4 !important;
+}
+
+#status-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  background: rgba(7, 13, 31, 0.92);
+  border-top: 1px solid #1A2448;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  gap: 20px;
+  z-index: 1000;
+}
+
+#lora-status { color: #00D4FF; font-size: 11px; font-family: Consolas, monospace; }
+#node-count  { color: #7A8FBF; font-size: 11px; }
+
+#theme-toggle {
+  margin-left: auto;
+  background: rgba(0,212,255,0.12);
+  border: 1px solid #00D4FF;
+  color: #00D4FF;
+  border-radius: 4px;
+  font-size: 10px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-family: "Segoe UI", sans-serif;
+}
+#theme-toggle:hover { background: rgba(0,212,255,0.25); }
+
+.leaflet-popup-content-wrapper {
+  background: #0D1530; border: 1px solid #1A2448; color: #C8D8FF;
+  border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+}
+.leaflet-popup-tip { background: #0D1530; }
+.leaflet-popup-content {
+  font-family: "Segoe UI", sans-serif; font-size: 12px;
+  line-height: 1.5; min-width: 180px;
+}
+.leaflet-popup-content strong { color: #00D4FF; font-size: 13px; }
+.leaflet-popup-content .meta  { color: #7A8FBF; font-size: 10px; margin-top: 2px; }
+.leaflet-popup-content .detail{ color: #C8D8FF; font-size: 11px; font-family: Consolas, monospace; }
+.leaflet-popup-content .inspect-btn {
+  display: inline-block; margin-top: 8px; padding: 3px 10px;
+  background: rgba(0,212,255,0.12); border: 1px solid #00D4FF;
+  color: #00D4FF; border-radius: 4px; font-size: 10px; cursor: pointer;
+}
+.leaflet-popup-content .inspect-btn:hover { background: rgba(0,212,255,0.25); }
+
+.leaflet-control-zoom a {
+  background: #0D1530 !important; color: #00D4FF !important; border-color: #1A2448 !important;
+}
+.leaflet-control-zoom a:hover { background: #131C3A !important; }
+
+/* Higher-specificity selectors (two classes) so these always win over
+   Leaflet's own .leaflet-div-icon default (white bg, gray border) regardless
+   of stylesheet load order — equal-specificity same-order rules previously
+   let Leaflet's default silently paint over every marker. */
+.leaflet-div-icon.mesh-marker-local   { border: 3px solid #00FF88; border-radius: 50%; background: rgba(0,255,136,0.30); }
+.leaflet-div-icon.mesh-marker-direct  { border: 2px solid #00D4FF; border-radius: 50%; background: rgba(0,212,255,0.20); }
+.leaflet-div-icon.mesh-marker-relayed { border: 2px solid #8B5CF6; border-radius: 4px;  background: rgba(139,92,246,0.20); }
+.leaflet-div-icon.mesh-marker-stale   { border: 1px solid #5A6690; border-radius: 50%; background: rgba(90,102,144,0.20); opacity:.6; }
+
+.marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
+  background: rgba(0,212,255,0.15); color: #00D4FF; border: 1px solid #00D4FF;
+  font-family: Consolas, monospace; font-size: 11px; font-weight: 700;
+}
+.marker-cluster-small  { background: rgba(0,212,255,0.08); }
+.marker-cluster-medium { background: rgba(139,92,246,0.08); }
+.marker-cluster-large  { background: rgba(255,184,0,0.08); }

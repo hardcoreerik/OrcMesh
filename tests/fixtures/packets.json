@@ -1,0 +1,218 @@
+{
+  "direct_text": {
+    "comment": "Zero-hop RF text message, sender known",
+    "from": 111111,
+    "fromId": "!0001b1c7",
+    "to": 4294967295,
+    "id": 55001,
+    "channel": 0,
+    "rxSnr": 12.5,
+    "rxRssi": -68,
+    "hopStart": 3,
+    "hopLimit": 3,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": 1,
+      "text": "Hello direct"
+    }
+  },
+  "one_hop_text": {
+    "comment": "One-hop RF text message",
+    "from": 222222,
+    "fromId": "!000364ce",
+    "to": 4294967295,
+    "id": 55002,
+    "channel": 0,
+    "rxSnr": 6.0,
+    "rxRssi": -88,
+    "hopStart": 3,
+    "hopLimit": 2,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": 1,
+      "text": "Hello one hop"
+    }
+  },
+  "multi_hop_text": {
+    "comment": "Two-hop RF text message",
+    "from": 333333,
+    "fromId": "!00051615",
+    "to": 4294967295,
+    "id": 55003,
+    "channel": 1,
+    "rxSnr": -1.5,
+    "rxRssi": -110,
+    "hopStart": 3,
+    "hopLimit": 1,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": 1,
+      "text": "Hello two hops"
+    }
+  },
+  "mqtt_text": {
+    "comment": "Text received via MQTT gateway",
+    "from": 444444,
+    "fromId": "!0006c81c",
+    "to": 4294967295,
+    "id": 55004,
+    "channel": 0,
+    "rxSnr": null,
+    "rxRssi": null,
+    "hopStart": 3,
+    "hopLimit": 3,
+    "viaMqtt": true,
+    "decoded": {
+      "portnum": 1,
+      "text": "Hello via MQTT"
+    }
+  },
+  "node_info": {
+    "comment": "NodeInfo broadcast",
+    "from": 555555,
+    "fromId": "!00087be3",
+    "to": 4294967295,
+    "id": 55010,
+    "channel": 0,
+    "rxSnr": 9.25,
+    "rxRssi": -74,
+    "hopStart": 3,
+    "hopLimit": 3,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": 4,
+      "user": {
+        "id": "!00087be3",
+        "longName": "Remote Alpha",
+        "shortName": "ALPH",
+        "role": "CLIENT_MUTE"
+      }
+    }
+  },
+  "position": {
+    "comment": "Position report, direct RF",
+    "from": 666666,
+    "fromId": "!000a2bea",
+    "to": 4294967295,
+    "id": 55020,
+    "channel": 0,
+    "rxSnr": 10.5,
+    "rxRssi": -71,
+    "hopStart": 3,
+    "hopLimit": 3,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": 3,
+      "position": {
+        "latitudeI": 377523000,
+        "longitudeI": -1222576000,
+        "altitude": 45
+      }
+    }
+  },
+  "telemetry": {
+    "comment": "Device telemetry packet",
+    "from": 111111,
+    "fromId": "!0001b1c7",
+    "to": 4294967295,
+    "id": 55030,
+    "channel": 0,
+    "rxSnr": 11.0,
+    "rxRssi": -70,
+    "hopStart": 3,
+    "hopLimit": 3,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": 67,
+      "telemetry": {
+        "deviceMetrics": {
+          "batteryLevel": 87,
+          "voltage": 3.94,
+          "channelUtilization": 4.2,
+          "airUtilTx": 1.1
+        }
+      }
+    }
+  },
+  "env_telemetry": {
+    "comment": "Environment telemetry with BME680",
+    "from": 111111,
+    "fromId": "!0001b1c7",
+    "to": 4294967295,
+    "id": 55031,
+    "channel": 0,
+    "rxSnr": 11.0,
+    "rxRssi": -70,
+    "hopStart": 3,
+    "hopLimit": 3,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": 67,
+      "telemetry": {
+        "environmentMetrics": {
+          "temperature": 22.4,
+          "relativeHumidity": 51.2,
+          "barometricPressure": 1013.25
+        }
+      }
+    }
+  },
+  "unknown_hop_start_zero": {
+    "comment": "hopStart == 0 means unknown firmware; hops_used is indeterminate",
+    "from": 777777,
+    "fromId": "!000bde31",
+    "to": 4294967295,
+    "id": 55040,
+    "channel": 0,
+    "rxSnr": 3.0,
+    "rxRssi": -100,
+    "hopStart": 0,
+    "hopLimit": 0,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": 1,
+      "text": "Old firmware"
+    }
+  },
+  "malformed_no_decoded": {
+    "comment": "Packet with missing decoded block",
+    "from": 888888,
+    "fromId": "!000d9038",
+    "to": 4294967295,
+    "id": 55050
+  },
+  "malformed_decoded_not_dict": {
+    "comment": "Decoded is not a dict",
+    "from": 999999,
+    "id": 55051,
+    "decoded": "garbage"
+  },
+  "routing_ack": {
+    "comment": "Routing ACK from a peer",
+    "from": 111111,
+    "fromId": "!0001b1c7",
+    "to": 222222,
+    "id": 55060,
+    "channel": 0,
+    "decoded": {
+      "portnum": 5,
+      "routing": {"errorReason": "NONE"},
+      "requestId": 55001
+    }
+  },
+  "traceroute": {
+    "comment": "Traceroute packet",
+    "from": 111111,
+    "fromId": "!0001b1c7",
+    "to": 4294967295,
+    "id": 55070,
+    "channel": 0,
+    "rxSnr": 9.0,
+    "rxRssi": -75,
+    "hopStart": 3,
+    "hopLimit": 3,
+    "decoded": {
+      "portnum": 70
+    }
+  }
+}

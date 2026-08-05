@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MeshChat Map</title>
+<link rel="stylesheet" href="map.css" />
+<!-- Leaflet is loaded from local vendor/ if available, else CDN (online basemap only) -->
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css" onerror="this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'"/>
+<link rel="stylesheet" href="vendor/markercluster/MarkerCluster.css" />
+<link rel="stylesheet" href="vendor/markercluster/MarkerCluster.Default.css" />
+<script src="vendor/leaflet/leaflet.js" onerror="document.write('<script src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\'><\/script>')"></script>
+<script src="vendor/markercluster/leaflet.markercluster.js"></script>
+<!-- Vendored instead of qrc:///qtwebchannel/qwebchannel.js — the qrc path's
+     availability depends on Qt resource registration timing/config and was
+     failing silently in the packaged build, breaking the Python<->JS bridge
+     with no visible error (the page "loaded fine" but bridge stayed null). -->
+<script src="vendor/qwebchannel.js"></script>
+</head>
+<body class="theme-dark">
+<div id="map"></div>
+<div id="status-bar">
+  <span id="lora-status">Listening on connected radio</span>
+  <span id="node-count">0 nodes</span>
+  <button id="theme-toggle" onclick="toggleMapTheme()">☀ Light</button>
+</div>
+<script src="map.js"></script>
+</body>
+</html>
