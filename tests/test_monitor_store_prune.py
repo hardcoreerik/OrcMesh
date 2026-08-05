@@ -113,3 +113,86 @@ class TestPrune:
 
     def test_prune_on_empty_database_is_harmless(self, store):
         assert store.prune(retain_days=30) == {}
+
+
+class TestPruneTransactionIntegrity:
+    """A failure partway through must not report rolled-back rows as pruned."""
+
+    def test_counts_are_not_reported_when_the_transaction_rolls_back(self, store):
+        _seed(store, [90, 100])
+        conn = sqlite3.connect(str(store._path))
+
+        class FlakyConn:
+            """sqlite3.Connection.execute is read-only, so proxy instead of
+            patching. Fails on the second DELETE, after the first succeeded."""
+
+            def __init__(self, real):
+                self._real = real
+                self._deletes = 0
+
+            def execute(self, sql, *args, **kwargs):
+                if sql.startswith("DELETE"):
+                    self._deletes += 1
+                    if self._deletes == 2:
+                        raise sqlite3.OperationalError("injected failure")
+                return self._real.execute(sql, *args, **kwargs)
+
+            def __enter__(self):
+                return self._real.__enter__()
+
+            def __exit__(self, *exc):
+                return self._real.__exit__(*exc)
+
+        with pytest.raises(sqlite3.OperationalError):
+            MonitorStore._prune_on(FlakyConn(conn), retain_days=30)
+        conn.close()
+
+        # The packets DELETE was rolled back with the rest, so nothing was lost —
+        # and crucially no count was returned claiming otherwise.
+        assert _count(store, "packets") == 2, "rollback should have restored packets"
+
+    def test_connection_is_closed_even_when_prune_raises(self, store, monkeypatch):
+        opened = []
+
+        def tracking_conn():
+            c = sqlite3.connect(str(store._path))
+            opened.append(c)
+            return c
+
+        monkeypatch.setattr(store, "_read_conn", tracking_conn)
+        monkeypatch.setattr(
+            MonitorStore, "_prune_on",
+            staticmethod(lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))),
+        )
+
+        assert store.prune(retain_days=30) == {}
+        assert opened, "expected a connection to have been opened"
+        # A closed sqlite3 connection raises when used again.
+        with pytest.raises(sqlite3.ProgrammingError):
+            opened[0].execute("SELECT 1")
+
+
+class TestPruneAsync:
+    """prune_async must not do the deletes on the calling thread."""
+
+    def test_async_prune_eventually_deletes(self, store):
+        import time
+
+        _seed(store, [90])
+        store.prune_async(retain_days=30)
+        for _ in range(100):  # up to ~5s for the writer thread to pick it up
+            if _count(store, "packets") == 0:
+                break
+            time.sleep(0.05)
+        assert _count(store, "packets") == 0
+
+    def test_async_prune_returns_immediately(self, store):
+        # Returns None rather than counts — the work happens on the writer.
+        assert store.prune_async(retain_days=30) is None
+
+    def test_non_positive_retention_is_not_queued(self, store):
+        _seed(store, [365])
+        store.prune_async(retain_days=0)
+        import time
+        time.sleep(0.3)
+        assert _count(store, "packets") == 1

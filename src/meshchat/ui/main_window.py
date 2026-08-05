@@ -261,11 +261,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _prune_old_data(self) -> None:
-        """Deferred so it never delays the window appearing."""
-        deleted = self._store.prune()
-        if deleted:
-            total = sum(deleted.values())
-            log.info("Pruned %d old monitor row(s): %s", total, deleted)
+        """Queue retention cleanup onto the store's writer thread.
+
+        QTimer.singleShot only defers this into the GUI event loop — it does
+        not move the work off the GUI thread. Doing the DELETEs here would
+        block the UI for as long as they take, so the store queues them onto
+        the background writer instead and logs the outcome there.
+        """
+        self._store.prune_async()
 
     def _export_packets(self) -> None:
         from meshchat.services.export_service import ExportService

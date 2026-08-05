@@ -209,25 +209,56 @@ class MonitorStore:
         if retain_days <= 0:
             return {}
 
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=retain_days)).isoformat()
-        deleted: dict[str, int] = {}
+        conn = None
         try:
             conn = self._read_conn()
-            with conn:
-                for table in ("packets", "positions", "telemetry"):
-                    cur = conn.execute(
-                        f"DELETE FROM {table} WHERE observed_at < ?", (cutoff,)  # noqa: S608
-                    )
-                    if cur.rowcount > 0:
-                        deleted[table] = cur.rowcount
-            conn.close()
-            if deleted:
-                total = sum(deleted.values())
-                log.info("Pruned %d row(s) older than %d days: %s",
-                         total, retain_days, deleted)
+            return self._prune_on(conn, retain_days)
         except Exception as exc:
             log.error("MonitorStore.prune failed: %s", exc)
-        return deleted
+            return {}
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def prune_async(self, retain_days: int = DEFAULT_RETAIN_DAYS) -> None:
+        """Queue a prune onto the existing writer thread.
+
+        Deleting rows is blocking work; calling `prune()` directly from the GUI
+        thread freezes the UI for as long as the DELETEs take. Routing it
+        through the writer thread keeps the UI responsive and also keeps every
+        write to this database serialized on one connection.
+        """
+        if retain_days > 0:
+            self._enqueue(("prune", retain_days))
+
+    @staticmethod
+    def _prune_on(conn: sqlite3.Connection, retain_days: int) -> dict[str, int]:
+        """Run the deletes on `conn` and report what was actually committed."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retain_days)).isoformat()
+
+        # Fixed statements rather than an interpolated table name: nothing here
+        # is caller-controlled, and spelling them out removes any question of
+        # SQL injection for both readers and scanners.
+        statements = (
+            ("packets", "DELETE FROM packets WHERE observed_at < ?"),
+            ("positions", "DELETE FROM positions WHERE observed_at < ?"),
+            ("telemetry", "DELETE FROM telemetry WHERE observed_at < ?"),
+        )
+
+        counts: dict[str, int] = {}
+        with conn:  # commits on success, rolls back on any exception
+            for table, sql in statements:
+                cur = conn.execute(sql, (cutoff,))
+                if cur.rowcount > 0:
+                    counts[table] = cur.rowcount
+
+        # Only published after the transaction above commits. Assigning inside
+        # the block meant a failure on a later DELETE rolled back the earlier
+        # ones while still reporting them as pruned.
+        if counts:
+            log.info("Pruned %d row(s) older than %d days: %s",
+                     sum(counts.values()), retain_days, counts)
+        return counts
 
     def shutdown(self, timeout: float = 5.0) -> None:
         self._stop.set()
@@ -265,6 +296,11 @@ class MonitorStore:
             self._available = False
 
     def _flush(self, conn: sqlite3.Connection, batch: list) -> None:
+        # Prunes carry their own transaction, so run them outside the batch's
+        # `with conn:` rather than nesting transactions on the same connection.
+        prunes = [obj for kind, obj in batch if kind == "prune"]
+        batch = [item for item in batch if item[0] != "prune"]
+
         try:
             with conn:
                 for kind, obj in batch:
@@ -282,6 +318,12 @@ class MonitorStore:
                         self._write_message(conn, obj)
         except Exception as exc:
             log.error("MonitorStore flush error: %s", exc)
+
+        for retain_days in prunes:
+            try:
+                self._prune_on(conn, retain_days)
+            except Exception as exc:
+                log.error("MonitorStore prune failed: %s", exc)
 
     def _write_packet(self, conn: sqlite3.Connection, pkt: NetworkPacket) -> None:
         conn.execute(
