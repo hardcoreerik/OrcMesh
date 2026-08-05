@@ -1,6 +1,7 @@
 """MeshChat – ChatView: the main chat interface."""
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -215,10 +216,47 @@ class ChatView(QWidget):
 
     def update_message_status(self, packet_id: int, status: MessageStatus) -> None:
         """Update delivery status on an outbound message bubble."""
-        for local_id, bubble in self._bubbles.items():
+        for bubble in self._bubbles.values():
             if bubble._msg.packet_id == packet_id:
-                bubble.update_status(status)
-                break
+                self._apply_status(bubble, status)
+                return
+
+        # Outbound bubbles are created with packet_id=None — the radio only
+        # assigns a real id once it accepts the send, which happens a
+        # moment after the bubble already exists on screen, so the exact
+        # match above can never succeed for a message's first status
+        # update. Fall back to the oldest bubble still showing "Sending…"
+        # with no packet_id yet, and record the now-known id on it (in
+        # both the live bubble and the underlying stored message, so a
+        # channel/DM switch that rebuilds bubbles from _messages_by_key
+        # doesn't lose it) — a later status update can then match it
+        # directly via the exact match above.
+        for bubble in self._bubbles.values():
+            if bubble._msg.packet_id is None and bubble._msg.status == MessageStatus.SENDING:
+                self._apply_status(bubble, status, packet_id=packet_id)
+                return
+
+    def _apply_status(self, bubble: MessageBubble, status: MessageStatus, packet_id: int | None = None) -> None:
+        # ChatMessage is frozen, and bubble.update_status() below only ever
+        # updated the visual label — the underlying object's own .status
+        # field was never kept in sync (true even before this fix, on the
+        # exact-match path above), so persisted/reloaded history and
+        # anything else reading bubble._msg.status directly always saw the
+        # original send-time value. Replace the object so both stay true.
+        if packet_id is not None:
+            updated = dataclasses.replace(bubble._msg, status=status, packet_id=packet_id)
+        else:
+            updated = dataclasses.replace(bubble._msg, status=status)
+        self._replace_stored_message(bubble._msg, updated)
+        bubble._msg = updated
+        bubble.update_status(status)
+
+    def _replace_stored_message(self, old: ChatMessage, new: ChatMessage) -> None:
+        for msgs in self._messages_by_key.values():
+            for i, m in enumerate(msgs):
+                if m is old:
+                    msgs[i] = new
+                    return
 
     def set_send_enabled(self, enabled: bool) -> None:
         self._composer.set_enabled_for_send(enabled)
