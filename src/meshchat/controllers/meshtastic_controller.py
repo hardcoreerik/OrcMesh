@@ -195,7 +195,6 @@ def _extract_channels(interface) -> list[ChannelSummary]:
 def _device_summary(interface) -> DeviceSummary:
     try:
         my_info = getattr(interface, "myInfo", None) or {}
-        node_id = getattr(my_info, "my_node_num", None)
         metadata = getattr(interface, "metadata", None)
         fw = getattr(metadata, "firmware_version", None) if metadata else None
         nodes_by_num = getattr(interface, "nodesByNum", {}) or {}
@@ -323,8 +322,10 @@ class MeshtasticWorker(QObject):
             pub.unsubscribe(self._on_connection_established, "meshtastic.connection.established")
             pub.unsubscribe(self._on_connection_lost, "meshtastic.connection.lost")
             pub.unsubscribe(self._on_node_updated, "meshtastic.node.updated")
-        except Exception:
-            pass
+        except Exception as exc:
+            # Never let teardown raise, but don't discard it silently either —
+            # a failed unsubscribe leaks callbacks into the next connection.
+            log.warning("PubSub unsubscribe failed: %s", exc)
         self._subscribed = False
 
     # -----------------------------------------------------------------------
@@ -591,7 +592,7 @@ class MeshtasticWorker(QObject):
             ]
             ports.sort(key=lambda p: p.device)
             self.serial_ports_found.emit(ports)
-        except Exception as exc:
+        except Exception:
             log.exception("Serial port enumeration failed")
             self.serial_ports_found.emit([])
 
@@ -823,8 +824,8 @@ class MeshtasticWorker(QObject):
         if iface is not None:
             try:
                 iface.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Closing the radio interface failed: %s", exc)
 
     def _emit_error(
         self,

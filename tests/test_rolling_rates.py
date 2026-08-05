@@ -1,6 +1,5 @@
 """Tests for analytics.rolling_rates."""
 import threading
-import pytest
 from meshchat.analytics.rolling_rates import DualRateTracker, RollingRate
 
 

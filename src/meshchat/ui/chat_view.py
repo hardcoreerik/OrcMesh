@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -10,7 +9,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -18,7 +16,6 @@ from PySide6.QtWidgets import (
 
 from meshchat.controllers.meshtastic_controller import (
     ChatMessage,
-    MessageDirection,
     MessageStatus,
 )
 from meshchat.ui.widgets.message_bubble import MessageBubble

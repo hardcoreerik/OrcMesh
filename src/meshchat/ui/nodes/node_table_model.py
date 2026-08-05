@@ -4,7 +4,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PySide6.QtGui import QColor
 
 from meshchat.models.node_snapshot import NodeSnapshot
 
@@ -17,6 +18,32 @@ _COLUMNS = [
 ]
 
 _INFRA_ROLES = {"ROUTER", "ROUTER_LATE", "CLIENT_BASE", "ROUTER_CLIENT", "REPEATER"}
+
+
+def _source(n: NodeSnapshot) -> str:
+    if n.via_mqtt_count > n.rf_count:
+        return "MQTT"
+    return "RF" if n.rf_count > 0 else "?"
+
+
+# Column index → how to render that column for a node. Keeping this beside
+# _COLUMNS makes it obvious when the two fall out of sync (see the test that
+# asserts they stay the same length).
+_CELL_RENDERERS = (
+    lambda n: n.long_name or n.node_id or f"!{n.node_num:08x}",
+    lambda n: n.short_name or "—",
+    lambda n: n.node_id or f"!{n.node_num:08x}",
+    lambda n: n.role or "—",
+    lambda n: n.hw_model or "—",
+    lambda n: _age(n.last_heard),
+    lambda n: "✓" if n.is_direct else "",
+    lambda n: str(n.last_hops_used) if n.last_hops_used is not None else "—",
+    lambda n: f"{n.last_snr:.1f}" if n.last_snr is not None else "—",
+    lambda n: str(n.last_rssi) if n.last_rssi is not None else "—",
+    lambda n: str(n.packet_count),
+    lambda n: str(n.text_count),
+    _source,
+)
 
 
 def _age(ts: datetime | None) -> str:
@@ -60,26 +87,10 @@ class NodeTableModel(QAbstractTableModel):
 
         if role == Qt.ItemDataRole.DisplayRole:
             col = index.column()
-            if col == 0:  return n.long_name or n.node_id or f"!{n.node_num:08x}"
-            if col == 1:  return n.short_name or "—"
-            if col == 2:  return n.node_id or f"!{n.node_num:08x}"
-            if col == 3:  return n.role or "—"
-            if col == 4:  return n.hw_model or "—"
-            if col == 5:  return _age(n.last_heard)
-            if col == 6:  return "✓" if n.is_direct else ""
-            if col == 7:  return str(n.last_hops_used) if n.last_hops_used is not None else "—"
-            if col == 8:  return f"{n.last_snr:.1f}" if n.last_snr is not None else "—"
-            if col == 9:  return str(n.last_rssi) if n.last_rssi is not None else "—"
-            if col == 10: return str(n.packet_count)
-            if col == 11: return str(n.text_count)
-            if col == 12:
-                if n.via_mqtt_count > n.rf_count:
-                    return "MQTT"
-                if n.rf_count > 0:
-                    return "RF"
-                return "?"
+            if 0 <= col < len(_CELL_RENDERERS):
+                return _CELL_RENDERERS[col](n)
+            return None
         if role == Qt.ItemDataRole.ForegroundRole:
-            from PySide6.QtGui import QColor
             col = index.column()
             if col == 6 and n.is_direct:
                 return QColor("#00FF88")
@@ -94,7 +105,12 @@ class NodeTableModel(QAbstractTableModel):
 
     def update_nodes(self, nodes: dict[int, NodeSnapshot]) -> None:
         self.beginResetModel()
-        self._nodes = sorted(nodes.values(), key=lambda n: n.last_heard or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        never_heard = datetime.min.replace(tzinfo=timezone.utc)
+        self._nodes = sorted(
+            nodes.values(),
+            key=lambda n: n.last_heard or never_heard,
+            reverse=True,
+        )
         self.endResetModel()
 
     def node_at(self, row: int) -> NodeSnapshot | None:

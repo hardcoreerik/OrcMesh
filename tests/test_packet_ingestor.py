@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
-import pytest
 
 # ── Minimal Qt app for QObject signals ───────────────────────────────────────
 # PacketIngestor is a QObject; Qt signals require at minimum a QCoreApplication.

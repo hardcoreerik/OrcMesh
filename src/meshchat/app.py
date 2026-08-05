@@ -22,7 +22,6 @@ def main() -> int:
     # PySide6-WebEngine requires this env var on some Windows configs
     os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu-sandbox")
 
-    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
