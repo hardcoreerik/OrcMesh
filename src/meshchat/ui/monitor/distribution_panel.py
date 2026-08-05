@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
+import shiboken6
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
@@ -57,6 +58,14 @@ class _DistRow(QWidget):
         self._count_lbl.setToolTip(f"{pct}%")
 
     def mousePressEvent(self, event) -> None:
+        # Rows here are destroyed and rebuilt on every refresh. A click racing
+        # that rebuild can land on a row whose C++ side is already gone — this
+        # exact crash was hit via user report in RankingsPanel, which now
+        # pools its rows instead (see rankings_panel.py) as the real fix.
+        # This panel refreshes less aggressively, so a defensive guard is
+        # proportionate here rather than the same pooling rewrite.
+        if not shiboken6.isValid(self):
+            return
         self.clicked.emit(self._category)
         super().mousePressEvent(event)
 
