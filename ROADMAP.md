@@ -1,7 +1,8 @@
 # Roadmap
 
-Source documents for this project's original intent live outside this repo,
-at `F:\Ai\MeshMonitor\`:
+This project started from two planning documents that are **not** part of
+this repository (they're local planning material, not something every
+clone/checkout of this repo has access to):
 
 - `CLAUDE_MESHCHAT_WINDOWS_BUILD_SPEC.md` — the original build spec (MVP:
   channel chat over BLE/TCP) plus its §27 "optional phase-two features" list.
@@ -9,7 +10,9 @@ at `F:\Ai\MeshMonitor\`:
   network monitor dashboard (map, node table, rankings, distribution panels,
   telemetry).
 
-This document tracks status against both, plus what's come up since.
+This document tracks status against both, plus what's come up since. If
+you don't have those source documents, everything you need is summarized
+below — they're cited here for provenance, not as a dependency.
 
 ## Shipped
 
@@ -38,8 +41,8 @@ This document tracks status against both, plus what's come up since.
 
 ## In progress
 
-- PR #6 — map pin labels, zoom-based clustering, click-to-inspect
-  cross-page sync (branch `feature/map-pin-labels`)
+- Map pin labels, zoom-based clustering, click-to-inspect cross-page sync
+  (branch `feature/map-pin-labels`) — move to Shipped once merged.
 
 ## Near-term
 

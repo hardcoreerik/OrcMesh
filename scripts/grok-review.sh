@@ -8,11 +8,13 @@
 #   scripts/grok-review.sh some-branch main PR6-final-pass   # + a label
 #
 # Session/state files live OUTSIDE the repo (never committed) at
-# $GROK_REVIEWS_DIR (default F:\AI\Temp\Grok-Reviews):
-#   <Project>_BASE.session-id           shared repo-orientation session
-#   <Project>_<branch>.session-id       this branch's forked review session
-#   <Project>_<branch>.last-commit      commit last reviewed on this branch
-#   <Project>_<branch>_<label>_<ts>.prompt.txt   the prompt sent each run (for reference)
+# $GROK_REVIEWS_DIR (default F:\AI\Temp\Grok-Reviews), keyed on branch+base
+# together (reviewing the same branch against a different base is a
+# different comparison and gets its own state):
+#   <Project>_BASE.session-id                    shared repo-orientation session
+#   <Project>_<branch>_vs_<base>.session-id       this comparison's forked review session
+#   <Project>_<branch>_vs_<base>.last-commit      commit last reviewed for this comparison
+#   <Project>_<branch>_vs_<base>_<label>_<ts>.prompt.txt   the prompt sent each run (for reference)
 #
 # First run on a branch: forks a fresh session off the shared base (creating
 # the base session once, the first time this ever runs, by having Grok skim
@@ -38,11 +40,18 @@ LABEL="${3:-review}"
 
 GROK="$(command -v grok || true)"
 if [ -z "$GROK" ]; then
-  WIN_DEFAULT="$USERPROFILE/.grok/bin/grok.exe"
-  if [ -f "$WIN_DEFAULT" ]; then
-    GROK="$WIN_DEFAULT"
-  else
-    echo "grok CLI not found on PATH or at $WIN_DEFAULT" >&2
+  # ${VAR:-} guards against "unbound variable" under set -u when
+  # USERPROFILE/HOME aren't set (e.g. non-Windows, or a stripped-down
+  # shell) — an empty candidate just fails the -f check harmlessly instead
+  # of crashing before we can print the real error.
+  for candidate in "${USERPROFILE:-}/.grok/bin/grok.exe" "${HOME:-}/.grok/bin/grok.exe" "${HOME:-}/.grok/bin/grok"; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      GROK="$candidate"
+      break
+    fi
+  done
+  if [ -z "$GROK" ]; then
+    echo "grok CLI not found on PATH, \$USERPROFILE/.grok/bin/grok.exe, or \$HOME/.grok/bin/grok(.exe)" >&2
     exit 3
   fi
 fi
@@ -58,12 +67,18 @@ else
   PROJECT_NAME="$(basename "$REPO_ROOT")"
 fi
 BRANCH_SLUG="$(printf '%s' "$HEAD_REF" | tr '/' '-')"
+BASE_REF_SLUG="$(printf '%s' "$BASE_REF" | tr '/' '-')"
+# Keyed on branch+base together: reviewing the same branch against a
+# different base ref is a different comparison and must not reuse a
+# last-reviewed-commit checkpoint (or skip entirely) from a prior run
+# against a different base.
+COMPARISON_SLUG="${BRANCH_SLUG}_vs_${BASE_REF_SLUG}"
 
 BASE_SESSION_FILE="$GROK_REVIEWS_DIR/${PROJECT_NAME}_BASE.session-id"
-BRANCH_SESSION_FILE="$GROK_REVIEWS_DIR/${PROJECT_NAME}_${BRANCH_SLUG}.session-id"
-LAST_COMMIT_FILE="$GROK_REVIEWS_DIR/${PROJECT_NAME}_${BRANCH_SLUG}.last-commit"
+BRANCH_SESSION_FILE="$GROK_REVIEWS_DIR/${PROJECT_NAME}_${COMPARISON_SLUG}.session-id"
+LAST_COMMIT_FILE="$GROK_REVIEWS_DIR/${PROJECT_NAME}_${COMPARISON_SLUG}.last-commit"
 TS="$(date +%Y%m%d-%H%M%S)"
-PROMPT_FILE="$GROK_REVIEWS_DIR/${PROJECT_NAME}_${BRANCH_SLUG}_${LABEL}_${TS}.prompt.txt"
+PROMPT_FILE="$GROK_REVIEWS_DIR/${PROJECT_NAME}_${COMPARISON_SLUG}_${LABEL}_${TS}.prompt.txt"
 
 new_uuid() {
   if command -v python >/dev/null 2>&1; then
@@ -82,6 +97,17 @@ else
 fi
 
 git fetch origin "$BASE_REF" "$HEAD_REF" >/dev/null 2>&1 || true
+
+# Prefer the local branch tip when it exists — origin/$HEAD_REF can lag
+# behind local commits that haven't been pushed yet, which would otherwise
+# silently exclude them from both the full diff and the incremental-since-
+# last-review range. Fall back to the remote-tracking ref only when there's
+# no local branch (e.g. reviewing someone else's branch by name).
+if git show-ref --verify --quiet "refs/heads/$HEAD_REF"; then
+  CURRENT_REF="$HEAD_REF"
+else
+  CURRENT_REF="origin/$HEAD_REF"
+fi
 
 # ── One-time shared base session: orient Grok on the codebase once, so every
 #    branch's forked session starts warm instead of cold. ─────────────────
@@ -129,12 +155,12 @@ fi
 # ── Build the diff: full diff on first run, incremental since last reviewed
 #    commit on later runs. If nothing changed, skip calling Grok entirely. ─
 if [ "$FIRST_RUN" = 1 ] || [ ! -f "$LAST_COMMIT_FILE" ]; then
-  DIFF_RANGE="origin/$BASE_REF...origin/$HEAD_REF"
-  DIFF_CONTENT="$(git diff "$DIFF_RANGE" 2>/dev/null || git diff "$BASE_REF...$HEAD_REF")"
+  DIFF_RANGE="origin/$BASE_REF...$CURRENT_REF"
+  DIFF_CONTENT="$(git diff "$DIFF_RANGE" 2>/dev/null || git diff "$BASE_REF...$CURRENT_REF")"
   DIFF_DESC="the full diff of \"$HEAD_REF\" against \"$BASE_REF\""
 else
   LAST_COMMIT="$(cat "$LAST_COMMIT_FILE")"
-  CURRENT_COMMIT="$(git rev-parse "origin/$HEAD_REF" 2>/dev/null || git rev-parse "$HEAD_REF")"
+  CURRENT_COMMIT="$(git rev-parse "$CURRENT_REF")"
   if [ "$LAST_COMMIT" = "$CURRENT_COMMIT" ]; then
     echo "No new commits on \"$HEAD_REF\" since the last review ($LAST_COMMIT). Nothing to review."
     exit 0
@@ -171,5 +197,4 @@ EOF
 # shellcheck disable=SC2086
 "$GROK" $RESUME_ARGS $MODE_FLAGS --prompt-file "$PROMPT_FILE"
 
-git rev-parse "origin/$HEAD_REF" 2>/dev/null > "$LAST_COMMIT_FILE" \
-  || git rev-parse "$HEAD_REF" > "$LAST_COMMIT_FILE"
+git rev-parse "$CURRENT_REF" > "$LAST_COMMIT_FILE"
