@@ -137,7 +137,7 @@ function buildPopup(data) {
     : "—";
 
   return "<strong>" + escapeHtml(data.name) + "</strong>" +
-    "<div class='meta'>Node " + data.node_num + (data.role ? "  ·  " + data.role : "") + "</div>" +
+    "<div class='meta'>Node " + data.node_num + (data.role ? "  ·  " + escapeHtml(data.role) : "") + "</div>" +
     "<div class='detail'>Last heard: " + ageStr + "</div>" +
     "<div class='detail'>Hops: " + hopsStr + "</div>" +
     "<a class='inspect-btn' onclick='nodeClicked(" + data.node_num + ")'>Inspect ↗</a>";

@@ -29,7 +29,11 @@ class MapWidget(QWidget):
     Falls back to a placeholder when QtWebEngine is unavailable.
     """
 
-    node_clicked = Signal(int)   # node_num
+    # object, not int: see MapBridge.node_clicked — Qt int signals are
+    # 32-bit signed and truncate a real (unsigned, can exceed 0x7FFFFFFF)
+    # Meshtastic node_num. Must match MapBridge's signal type since this
+    # forwards it directly (signal-to-signal connect below).
+    node_clicked = Signal(object)   # node_num
 
     def __init__(self, parent=None):
         super().__init__(parent)

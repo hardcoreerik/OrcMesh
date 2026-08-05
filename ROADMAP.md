@@ -28,7 +28,6 @@ This document tracks status against both, plus what's come up since.
 - Rankings (last heard, most packets, nearby/farthest, signal, messages)
 - Distribution panels (packet type, channel, role, hardware)
 - Node inspector (identity, signal/hops, telemetry)
-- Map pin labels + click-to-inspect, synced with the Nodes table selection
 
 **Beyond both original specs:**
 - GPL-3.0 relicense (required once linking the GPL-3.0-only `meshtastic`
