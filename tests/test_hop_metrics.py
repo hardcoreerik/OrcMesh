@@ -108,19 +108,21 @@ class TestHopEfficiencyBucket:
         assert hop_efficiency_bucket(0.01) == "1–24%"
 
     def test_boundary_25_percent(self):
-        assert hop_efficiency_bucket(0.25) == "1–24%"
+        # A value exactly on a boundary belongs in the bucket named for
+        # that boundary, not the one below it.
+        assert hop_efficiency_bucket(0.25) == "25–49%"
 
     def test_boundary_26_percent(self):
         assert hop_efficiency_bucket(0.26) == "25–49%"
 
     def test_boundary_50_percent(self):
-        assert hop_efficiency_bucket(0.50) == "25–49%"
+        assert hop_efficiency_bucket(0.50) == "50–74%"
 
     def test_boundary_51_percent(self):
         assert hop_efficiency_bucket(0.51) == "50–74%"
 
     def test_boundary_75_percent(self):
-        assert hop_efficiency_bucket(0.75) == "50–74%"
+        assert hop_efficiency_bucket(0.75) == "75–99%"
 
     def test_boundary_76_percent(self):
         assert hop_efficiency_bucket(0.76) == "75–99%"

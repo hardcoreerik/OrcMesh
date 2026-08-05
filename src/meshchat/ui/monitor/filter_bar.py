@@ -88,7 +88,18 @@ class FilterBar(QWidget):
         self.filter_changed.emit(self.current_filter())
 
     def _reset(self) -> None:
-        self._age.setCurrentIndex(2)
-        self._src.setCurrentIndex(0)
-        self._pkt.setCurrentIndex(0)
+        # Each setCurrentIndex() below fires currentIndexChanged -> _emit()
+        # on its own whenever it actually changes that combo's value, so a
+        # naive reset can emit filter_changed up to 3 extra times before the
+        # explicit call below — each one triggering a full rankings rebuild
+        # in MonitorPage. Block signals during the resets and emit once.
+        for combo in (self._age, self._src, self._pkt):
+            combo.blockSignals(True)
+        try:
+            self._age.setCurrentIndex(2)
+            self._src.setCurrentIndex(0)
+            self._pkt.setCurrentIndex(0)
+        finally:
+            for combo in (self._age, self._src, self._pkt):
+                combo.blockSignals(False)
         self._emit()

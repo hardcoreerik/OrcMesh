@@ -291,7 +291,12 @@ class MeshtasticWorker(QObject):
     channels_updated = Signal(list)                   # list[ChannelSummary]
     lora_config_updated = Signal(object)              # LoRaConfigSummary | None
     message_received = Signal(object)                 # ChatMessage
-    message_status_changed = Signal(int, object, str) # (packet_id, MessageStatus, detail)
+    # object, not int, for packet_id: Meshtastic packet IDs are random
+    # 32-bit *unsigned* values that can exceed 0x7FFFFFFF — same truncation
+    # bug as node_num (see ARCHITECTURE.md). A truncated id here can never
+    # match chat_view.py's untruncated ChatMessage.packet_id, leaving a
+    # message stuck showing "Sending…" even after the radio accepted it.
+    message_status_changed = Signal(object, object, str) # (packet_id, MessageStatus, detail)
     node_updated = Signal(dict)                       # raw node dict
     # object, not int: Meshtastic node_num is a 32-bit *unsigned* value and
     # can exceed 0x7FFFFFFF — a Qt-typed int signal/slot is C++ int32 and
@@ -890,7 +895,7 @@ class MeshtasticController(QObject):
     channels_updated = Signal(list)
     lora_config_updated = Signal(object)
     message_received = Signal(object)
-    message_status_changed = Signal(int, object, str)
+    message_status_changed = Signal(object, object, str)  # object: see MeshtasticWorker's matching signal
     node_updated = Signal(dict)
     node_action_completed = Signal(object, str, str)  # object: see MeshtasticWorker's matching signal
     nodedb_synced = Signal(list)

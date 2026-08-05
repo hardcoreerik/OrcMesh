@@ -57,11 +57,15 @@ def hop_efficiency_bucket(percent: float | None) -> str:
         return "Unknown"
     if percent == 0.0:
         return "0%"
-    if percent <= 0.25:
+    # < not <=: a value exactly on a boundary (0.25/0.50/0.75) belongs in
+    # the bucket named for that boundary (e.g. exactly 25% -> "25-49%"),
+    # not the one below it — <= previously put boundary values one bucket
+    # too low.
+    if percent < 0.25:
         return "1–24%"
-    if percent <= 0.50:
+    if percent < 0.50:
         return "25–49%"
-    if percent <= 0.75:
+    if percent < 0.75:
         return "50–74%"
     if percent < 1.0:
         return "75–99%"
