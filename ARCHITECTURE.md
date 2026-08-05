@@ -24,15 +24,17 @@ actually shipped when.
 - Background write work (SQLite inserts, retention pruning) is similarly kept
   off the GUI thread by `services/monitor_store.py`, queued onto its own
   writer rather than blocking the event loop.
-- **Never put a Meshtastic `node_num` in a Qt `int`-typed `Signal`, `@Slot`,
-  or `Q_ARG`.** `node_num` is a 32-bit *unsigned* value and real hardware IDs
-  can exceed `0x7FFFFFFF`; Qt's `int` type is C++ `int32` (signed) and
-  silently wraps such values to negative, breaking any `dict.get(node_num)`
-  lookup downstream. Use `Signal(object)` (Python int, untouched) for
-  signals staying within Python, or `@Slot("qlonglong")`/`Q_ARG("qlonglong",
-  ...)` for the few places that actually cross a real C++ boundary (the
-  QWebChannel bridge in `ui/map/`, and the queued cross-thread calls into
-  `MeshtasticWorker`).
+- **Never put a Meshtastic `node_num` or `packet_id` in a Qt `int`-typed
+  `Signal`, `@Slot`, or `Q_ARG`.** Both are 32-bit *unsigned* values (real
+  hardware node IDs and randomly-generated packet IDs can both exceed
+  `0x7FFFFFFF`); Qt's `int` type is C++ `int32` (signed) and silently wraps
+  such values to negative, breaking any `dict.get(...)`/`==` match
+  downstream (e.g. matching a `message_status_changed` event back to the
+  `ChatMessage.packet_id` that sent it). Use `Signal(object)` (Python int,
+  untouched) for signals staying within Python, or
+  `@Slot("qlonglong")`/`Q_ARG("qlonglong", ...)` for the few places that
+  actually cross a real C++ boundary (the QWebChannel bridge in `ui/map/`,
+  and the queued cross-thread calls into `MeshtasticWorker`).
 
 ## Packet flow (the spine of the app)
 

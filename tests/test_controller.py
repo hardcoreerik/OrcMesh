@@ -208,7 +208,7 @@ class TestSendText:
         with _patch_ble(fakes):
             ctrl.connect_ble("AA:BB:CC:DD:EE:FF")
             _pump_events(1000)
-            ctrl.send_channel_text("Hello world", channel_index=0)
+            ctrl.send_channel_text("Hello world", channel_index=0, local_id="local-1")
             _pump_events(500)
 
         assert fakes, "No fake interface was created"

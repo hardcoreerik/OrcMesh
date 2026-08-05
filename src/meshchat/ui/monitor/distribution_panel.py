@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 
 import shiboken6
+
+from meshchat.analytics.packet_classifier import packet_category
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
@@ -71,15 +73,21 @@ class _DistRow(QWidget):
 
 
 _PORTNUM_LABELS = {
+    # Labels here must match analytics/packet_classifier.packet_category()'s
+    # return values exactly — update_packets() below delegates to it rather
+    # than re-deriving the portnum→category mapping, so the two can't drift
+    # apart (they had: this used to be a separate, subtly different mapping
+    # that never checked pki_encrypted and treated an unset portnum as
+    # "Other Known" instead of "Unknown Port").
     1:   ("Text",             "#00D4FF"),
     3:   ("Position",         "#00FF88"),
-    4:   ("NodeInfo",         "#8B5CF6"),
+    4:   ("Node Info",        "#8B5CF6"),
     5:   ("Routing",          "#4F9EFF"),
     67:  ("Telemetry",        "#FFB800"),
     70:  ("Traceroute",       "#FF8C00"),
-    71:  ("NeighborInfo",     "#FF69B4"),
-    73:  ("MapReport",        "#20B2AA"),
-    256: ("PrivateApp",       "#5A6690"),
+    71:  ("Neighbor Info",    "#FF69B4"),
+    73:  ("Map Report",       "#20B2AA"),
+    256: ("Private App",      "#5A6690"),
 }
 
 _ROLE_COLORS = {
@@ -127,7 +135,11 @@ class PacketBreakdownPanel(QFrame):
     def update_packets(self, packets) -> None:
         counts: dict[str, int] = defaultdict(int)
         for pkt in packets:
-            label, _ = _PORTNUM_LABELS.get(pkt.portnum, ("Other Known", ""))
+            category = packet_category(pkt.portnum, pkt.pki_encrypted)
+            # "Unknown Port" and "Encrypted/Undecoded" are distinct in the
+            # canonical classifier but share one row here — both mean "we
+            # don't know what this packet actually is".
+            label = "Unknown/Encrypted" if category in ("Unknown Port", "Encrypted/Undecoded") else category
             counts[label] += 1
         total = sum(counts.values()) or 1
         for label, row in self._rows.items():

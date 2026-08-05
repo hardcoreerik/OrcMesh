@@ -434,8 +434,9 @@ class MainWindow(QMainWindow):
         self._chat_view.add_message(msg)
         self._store.save_message(msg)
 
-    def _on_message_status(self, packet_id: int, status: MessageStatus, detail: str) -> None:
-        self._chat_view.update_message_status(packet_id, status)
+    def _on_message_status(self, local_id: str, packet_id: int | None, status: MessageStatus, detail: str) -> None:
+        self._chat_view.update_message_status(local_id, packet_id, status)
+        self._store.update_message_status(local_id, packet_id, status)
 
     def _on_error(self, err) -> None:
         self._status_bar.showMessage(f"⚠  {err.title}: {err.message}", 8000)
@@ -498,7 +499,7 @@ class MainWindow(QMainWindow):
         )
         self._chat_view.add_message(msg)
         self._store.save_message(msg)
-        self._controller.send_channel_text(text, channel_index)
+        self._controller.send_channel_text(text, channel_index, msg.local_id)
 
     def _on_send_dm(self, text: str, destination_num: int) -> None:
         import uuid
@@ -521,7 +522,7 @@ class MainWindow(QMainWindow):
         )
         self._chat_view.add_message(msg)
         self._store.save_message(msg)
-        self._controller.send_direct_text(text, destination_num)
+        self._controller.send_direct_text(text, destination_num, msg.local_id)
 
     def _on_node_message_requested(self, node_num: int, name: str) -> None:
         """Jump to the Chat page with a DM thread open to this node."""

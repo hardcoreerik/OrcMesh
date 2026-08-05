@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from collections import deque
 
 from PySide6.QtCore import (
     QAbstractTableModel,
@@ -32,7 +31,11 @@ _MAX_ROWS = 20_000
 class PacketLogModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._rows: deque[NetworkPacket] = deque(maxlen=_MAX_ROWS)
+        # Plain list, not deque(maxlen=...): a deque only supports O(1)
+        # indexing near its ends — the middle is O(n) — and data() is
+        # called once per visible cell on every repaint, so indexing had to
+        # be O(1) here. Capacity is enforced manually in append_packet().
+        self._rows: list[NetworkPacket] = []
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return len(self._rows)
@@ -51,7 +54,7 @@ class PacketLogModel(QAbstractTableModel):
         row_idx = index.row()
         if row_idx >= len(self._rows):
             return None
-        pkt: NetworkPacket = list(self._rows)[row_idx]
+        pkt: NetworkPacket = self._rows[row_idx]
 
         if role == Qt.ItemDataRole.DisplayRole:
             col = index.column()
@@ -112,6 +115,16 @@ class PacketLogModel(QAbstractTableModel):
         return None
 
     def append_packet(self, pkt: NetworkPacket) -> None:
+        # Evict the oldest row first when at capacity, with its own
+        # begin/endRemoveRows — deque(maxlen=...)'s old silent eviction on
+        # append left the view thinking one more row existed than
+        # rowCount() actually reported once the log filled up, since only
+        # an insert notification was ever sent, never a matching removal.
+        if len(self._rows) >= _MAX_ROWS:
+            self.beginRemoveRows(QModelIndex(), 0, 0)
+            del self._rows[0]
+            self.endRemoveRows()
+
         row = len(self._rows)
         self.beginInsertRows(QModelIndex(), row, row)
         self._rows.append(pkt)

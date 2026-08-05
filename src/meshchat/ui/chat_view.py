@@ -1,6 +1,7 @@
 """MeshChat – ChatView: the main chat interface."""
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -213,12 +214,34 @@ class ChatView(QWidget):
         if self._current_key is not None:
             self._rebuild_bubbles()
 
-    def update_message_status(self, packet_id: int, status: MessageStatus) -> None:
-        """Update delivery status on an outbound message bubble."""
-        for local_id, bubble in self._bubbles.items():
-            if bubble._msg.packet_id == packet_id:
-                bubble.update_status(status)
-                break
+    def update_message_status(self, local_id: str, packet_id: int | None, status: MessageStatus) -> None:
+        """Update delivery status on an outbound message.
+
+        Matched by local_id — generated client-side at bubble creation and
+        threaded through the whole send path, so (unlike packet_id, only
+        known once the radio accepts the send, or never for a failed send)
+        it always identifies the right message exactly. Searches
+        _messages_by_key rather than just the currently-visible _bubbles,
+        so a status update for a message on a different channel/DM than
+        the one currently shown still lands correctly.
+        """
+        for msgs in self._messages_by_key.values():
+            for i, m in enumerate(msgs):
+                if m.local_id != local_id:
+                    continue
+                # ChatMessage is frozen, and bubble.update_status() only
+                # ever updated the visual label — the underlying object's
+                # own .status field was never kept in sync, so persisted/
+                # reloaded history and anything else reading it directly
+                # always saw the original send-time value.
+                new_packet_id = packet_id if packet_id is not None else m.packet_id
+                updated = dataclasses.replace(m, status=status, packet_id=new_packet_id)
+                msgs[i] = updated
+                bubble = self._bubbles.get(local_id)
+                if bubble is not None:
+                    bubble._msg = updated
+                    bubble.update_status(status)
+                return
 
     def set_send_enabled(self, enabled: bool) -> None:
         self._composer.set_enabled_for_send(enabled)

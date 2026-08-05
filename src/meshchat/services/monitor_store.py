@@ -86,6 +86,16 @@ class MonitorStore:
         """Persist a ChatMessage (channel broadcast or direct message)."""
         self._enqueue(("message", msg))
 
+    def update_message_status(self, local_id: str, packet_id: int | None, status) -> None:
+        """Update a previously-saved outbound message's delivery status.
+
+        Without this, only the initial SENDING row from save_message() ever
+        existed in the DB — a later ACCEPTED_BY_RADIO/ACKNOWLEDGED/FAILED
+        never got persisted, so restarting the app and reloading history
+        showed every past outbound message stuck on "Sending…" again.
+        """
+        self._enqueue(("message_status", (local_id, packet_id, status)))
+
     def _enqueue(self, item: Any) -> None:
         try:
             self._write_q.put_nowait(item)
@@ -316,6 +326,8 @@ class MonitorStore:
                         self._write_node(conn, obj)
                     elif kind == "message":
                         self._write_message(conn, obj)
+                    elif kind == "message_status":
+                        self._write_message_status(conn, obj)
         except Exception as exc:
             log.error("MonitorStore flush error: %s", exc)
 
@@ -435,6 +447,16 @@ class MonitorStore:
                 msg.direction.value, msg.sender_num, msg.sender_id, msg.sender_name, msg.text,
                 _dt_str(msg.timestamp), len(msg.text.encode("utf-8")), msg.status.value,
             ),
+        )
+
+    def _write_message_status(self, conn: sqlite3.Connection, update: tuple) -> None:
+        local_id, packet_id, status = update
+        # COALESCE: a status update doesn't always carry a packet_id (e.g. a
+        # FAILED event on a send that never got one) — don't clobber an
+        # already-known packet_id with NULL in that case.
+        conn.execute(
+            "UPDATE messages SET status=?, packet_id=COALESCE(?, packet_id) WHERE local_id=?",
+            (status.value, packet_id, local_id),
         )
 
     def _read_conn(self) -> sqlite3.Connection:
