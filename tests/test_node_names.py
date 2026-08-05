@@ -70,6 +70,14 @@ class TestResolveNodeName:
         }
         assert resolve_node_name(500, nodes_by_num=nodes) == "Snake Node"
 
+    def test_node_num_zero_is_looked_up_not_treated_as_falsy(self):
+        # node_num == 0 is a legitimate (if unusual) node number — `and
+        # node_num` would treat it as falsy and skip the NodeDB lookup
+        # entirely, falling through to the formatted-number fallback
+        # instead of the real name.
+        nodes = {0: {"user": {"longName": "Zero Node"}}}
+        assert resolve_node_name(0, nodes_by_num=nodes) == "Zero Node"
+
 
 # ── resolve_short_name ────────────────────────────────────────────────────────
 
@@ -97,3 +105,7 @@ class TestResolveShortName:
         """A node_id shorter than 4 chars should not be truncated."""
         result = resolve_short_name(99999, node_id="!ab", nodes_by_num={})
         assert result == "!ab"
+
+    def test_node_num_zero_is_looked_up_not_treated_as_falsy(self):
+        nodes = {0: {"user": {"shortName": "ZERO"}}}
+        assert resolve_short_name(0, nodes_by_num=nodes) == "ZERO"

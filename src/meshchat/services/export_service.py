@@ -45,14 +45,19 @@ class ExportService:
                 row = {
                     "observed_at":        pkt.observed_at.isoformat(),
                     "rx_time":            pkt.rx_time.isoformat() if pkt.rx_time else "",
-                    "sender_num":         pkt.sender_num or "",
+                    # is-not-None, not `or ""`, for every numeric field
+                    # below: 0 is a legitimate value for a node number,
+                    # packet id, portnum (UNKNOWN_APP), or payload size —
+                    # `or ""` was silently blanking those rows out to an
+                    # empty CSV cell instead of showing the real 0.
+                    "sender_num":         pkt.sender_num if pkt.sender_num is not None else "",
                     "sender_id":          pkt.sender_id or "",
-                    "destination_num":    pkt.destination_num or "",
-                    "packet_id":          pkt.packet_id or "",
+                    "destination_num":    pkt.destination_num if pkt.destination_num is not None else "",
+                    "packet_id":          pkt.packet_id if pkt.packet_id is not None else "",
                     "channel_index":      pkt.channel_index if pkt.channel_index is not None else "",
-                    "portnum":            pkt.portnum or "",
+                    "portnum":            pkt.portnum if pkt.portnum is not None else "",
                     "portnum_name":       pkt.portnum_name,
-                    "payload_size":       pkt.payload_size or "",
+                    "payload_size":       pkt.payload_size if pkt.payload_size is not None else "",
                     "rx_snr":             pkt.rx_snr if pkt.rx_snr is not None else "",
                     "rx_rssi":            pkt.rx_rssi if pkt.rx_rssi is not None else "",
                     "hop_start":          pkt.hop_start if pkt.hop_start is not None else "",

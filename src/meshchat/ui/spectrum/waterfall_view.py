@@ -14,6 +14,17 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 log = logging.getLogger(__name__)
 
+# pyqtgraph's default ImageItem axis order is 'col-major' (data[x, y] —
+# axis 0 maps to the X screen coordinate). _history below is built as
+# (time_samples, freq_bins) — axis 0 = time, axis 1 = frequency — which is
+# 'row-major' semantics (data[y, x], matching plain numpy/image
+# conventions). Without this, the waterfall image renders with time
+# horizontal and frequency vertical while everything else (axis labels,
+# setRect's frequency-based X range, and set_markers()'s frequency-based
+# vertical LinearRegionItems) assumes the opposite — the actual spectral
+# content and the channel markers end up completely misaligned.
+pg.setConfigOptions(imageAxisOrder="row-major")
+
 # Cyan→purple→amber ramp matching the app's deep-space theme
 _COLORMAP_STOPS = [
     (0.00, (7, 13, 31)),        # near-black navy (noise floor)

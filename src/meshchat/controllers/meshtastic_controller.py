@@ -445,11 +445,15 @@ class MeshtasticWorker(QObject):
                 return
 
             # Resolve sender name
-            sender_num = packet.get("from") or packet.get("fromNum")
+            sender_num = packet.get("from")
+            if sender_num is None:
+                sender_num = packet.get("fromNum")
             sender_id = packet.get("fromId")
             nodes_by_num = getattr(interface, "nodesByNum", {}) or {}
             sender_name = "Unknown"
-            if sender_num and sender_num in nodes_by_num:
+            # sender_num is not None, not `and sender_num`: node_num == 0 is
+            # a legitimate (if unusual) node number.
+            if sender_num is not None and sender_num in nodes_by_num:
                 user = nodes_by_num[sender_num].get("user", {})
                 sender_name = user.get("longName") or user.get("shortName") or sender_id or f"!{sender_num:08x}"
             elif sender_id:
@@ -747,7 +751,12 @@ class MeshtasticWorker(QObject):
             packet = self._interface.sendText(text=text, wantAck=True, **send_kwargs)
             self.message_status_changed.emit(
                 local_id,
-                getattr(packet, "id", None) or 0,
+                # None, not `or 0`: chat_view.py and MonitorStore both treat
+                # None as "packet_id genuinely unknown, don't overwrite" —
+                # coercing a missing id to the literal 0 would bypass that
+                # sentinel and persist a bogus packet_id=0 over the real
+                # (or still-pending) value.
+                getattr(packet, "id", None),
                 MessageStatus.ACCEPTED_BY_RADIO,
                 "Accepted by radio",
             )

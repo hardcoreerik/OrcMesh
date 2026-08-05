@@ -128,6 +128,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_channel_time
 
 CREATE INDEX IF NOT EXISTS idx_messages_destination_time
     ON messages(destination_num, observed_at);
+
+-- Neither composite index above covers a plain, unfiltered ORDER BY
+-- observed_at (SQLite can only use a composite index for this via its
+-- leftmost column, channel_index/destination_num, neither of which this
+-- query filters on) — and MonitorStore.read_messages() does exactly that
+-- ("SELECT * FROM messages ORDER BY observed_at ASC LIMIT ?") to load
+-- chat history on every app startup.
+CREATE INDEX IF NOT EXISTS idx_messages_time
+    ON messages(observed_at);
 """
 
 

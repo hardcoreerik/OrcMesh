@@ -215,7 +215,12 @@ class NodeInspector(QWidget):
 
         self._hops_used.setText(str(snapshot.last_hops_used) if snapshot.last_hops_used is not None else "—")
         if snapshot.last_hops_used is not None and snapshot.last_hop_start is not None:
-            left = snapshot.last_hop_start - snapshot.last_hops_used
+            # Clamped, not raw: hops_used > hop_start shouldn't happen for
+            # a well-formed packet, but nothing upstream of this display
+            # guarantees it (a malformed/out-of-order packet could still
+            # produce it) — showing a negative "hops left" would be
+            # confusing rather than informative.
+            left = max(0, snapshot.last_hop_start - snapshot.last_hops_used)
             self._hops_left.setText(str(left))
         else:
             self._hops_left.setText("—")
