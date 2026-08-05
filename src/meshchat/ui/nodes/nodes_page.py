@@ -121,6 +121,18 @@ class NodesPage(QWidget):
         self._model.update_nodes(nodes)
         self._count_lbl.setText(f"{self._proxy.rowCount()} node(s)")
 
+    def select_node(self, node_num: int) -> None:
+        """Select and scroll to a node's row, e.g. after a click elsewhere
+        (map pin, ranking panel) asks this page to follow along."""
+        row = self._model.row_of(node_num)
+        if row is None:
+            return
+        proxy_index = self._proxy.mapFromSource(self._model.index(row, 0))
+        if not proxy_index.isValid():
+            return
+        self._table.setCurrentIndex(proxy_index)
+        self._table.scrollTo(proxy_index)
+
     def _on_search(self, text: str) -> None:
         self._proxy.setFilterFixedString(text)
         self._count_lbl.setText(f"{self._proxy.rowCount()} node(s)")

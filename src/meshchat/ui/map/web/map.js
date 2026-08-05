@@ -118,6 +118,10 @@ function nodeClicked(nodeNum) {
   if (bridge) bridge.nodeClicked(nodeNum);
 }
 
+function labelText(data) {
+  return data.name || ("!" + data.node_num.toString(16));
+}
+
 // ── Public API called from Python via page.runJavaScript ───────────────────
 function updateNode(data) {
   if (!data || data.lat === null || data.lat === undefined || data.lon === null || data.lon === undefined) {
@@ -130,10 +134,18 @@ function updateNode(data) {
     existing.marker.setLatLng([data.lat, data.lon]);
     existing.marker.setIcon(markerIcon(data));
     existing.marker.bindPopup(buildPopup(data));
+    existing.marker.setTooltipContent(escapeHtml(labelText(data)));
     existing.data = data;
   } else {
     var marker = L.marker([data.lat, data.lon], { icon: markerIcon(data) });
     marker.bindPopup(buildPopup(data));
+    marker.bindTooltip(escapeHtml(labelText(data)), {
+      permanent: true,
+      direction: "top",
+      className: "mesh-marker-label",
+      offset: [0, -8],
+    });
+    marker.on("click", function() { nodeClicked(data.node_num); });
     clusterGroup.addLayer(marker);
     nodes[data.node_num] = { marker: marker, data: data };
   }

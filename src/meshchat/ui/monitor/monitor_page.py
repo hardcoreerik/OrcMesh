@@ -107,6 +107,7 @@ class MonitorPage(QWidget):
 
         self._map_widget = MapWidget()
         self._map_widget.setMinimumHeight(200)
+        self._map_widget.node_clicked.connect(self._on_ranking_node_selected)
         left_layout.addWidget(self._map_widget, 2)
 
         self._chart = PacketActivityChart()

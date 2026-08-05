@@ -18,6 +18,7 @@ body.theme-dark #map {
 }
 body.theme-dark .leaflet-pane.leaflet-marker-pane,
 body.theme-dark .leaflet-pane.leaflet-popup-pane,
+body.theme-dark .leaflet-pane.leaflet-tooltip-pane,
 body.theme-dark .leaflet-control-container {
   filter: hue-rotate(-185deg) saturate(1.43) brightness(1.11);
 }
@@ -109,3 +110,26 @@ body.theme-light .leaflet-container {
 .marker-cluster-small  { background: rgba(0,212,255,0.08); }
 .marker-cluster-medium { background: rgba(139,92,246,0.08); }
 .marker-cluster-large  { background: rgba(255,184,0,0.08); }
+
+/* Permanent node-name labels shown above every pin. Kept small and
+   low-contrast against the map so they don't compete with the pins
+   themselves, but readable at a glance without hovering/clicking. */
+.leaflet-tooltip.mesh-marker-label {
+  background: rgba(7, 13, 31, 0.78);
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  border-radius: 3px;
+  color: #C8D8FF;
+  font-family: "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  box-shadow: none;
+  pointer-events: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.leaflet-tooltip-top.mesh-marker-label::before {
+  border-top-color: rgba(7, 13, 31, 0.78);
+}

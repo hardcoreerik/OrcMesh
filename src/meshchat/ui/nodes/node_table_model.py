@@ -105,3 +105,9 @@ class NodeTableModel(QAbstractTableModel):
         if 0 <= row < len(self._nodes):
             return self._nodes[row]
         return None
+
+    def row_of(self, node_num: int) -> int | None:
+        for row, n in enumerate(self._nodes):
+            if n.node_num == node_num:
+                return row
+        return None
