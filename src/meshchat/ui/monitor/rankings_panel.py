@@ -108,8 +108,9 @@ class RankingsPanel(QWidget):
         # Clear existing rows
         while self._rows_layout.count() > 1:
             item = self._rows_layout.takeAt(0)
-            if item and item.widget():
-                item.widget().deleteLater()
+            widget = item.widget() if item else None
+            if widget is not None:
+                widget.deleteLater()
 
         for rank, (node_num, name, badge, detail) in enumerate(items[: self._max_rows], 1):
             row = _RankRow(rank, node_num, name, badge, detail)

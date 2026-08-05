@@ -113,7 +113,7 @@ class PacketActivityChart(QWidget):
 
     def record_packet(self, portnum: int | None) -> None:
         """Call this when a packet arrives to update counts."""
-        series = _PORTNUM_SERIES.get(portnum, "Other")
+        series = _PORTNUM_SERIES.get(portnum, "Other") if portnum is not None else "Other"
         self._bucket_counts[series] += 1
 
     def _flush_bucket(self) -> None:

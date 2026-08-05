@@ -66,3 +66,14 @@ ignore = ["E501"]
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
+
+# Qt's generated stubs type several virtuals more loosely than PySide6 actually
+# accepts (QAbstractItemModel.data, QWidget.update), and QObject.disconnect
+# collides with our own connection-teardown method. Overriding these is normal
+# PySide6 practice; the errors are stub artifacts, not defects.
+disable_error_code = ["override"]
+
+[[tool.mypy.overrides]]
+# Optional dependency — absent unless the [sdr] extra is installed.
+module = ["rtlsdr.*"]
+ignore_missing_imports = true
