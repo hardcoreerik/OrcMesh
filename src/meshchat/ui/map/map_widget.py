@@ -130,6 +130,10 @@ class MapWidget(QWidget):
         if self._bridge:
             self._bridge.focus_node(node_num)
 
+    def set_selected_node(self, node_num: int | None) -> None:
+        if self._bridge:
+            self._bridge.set_selected_node(node_num)
+
     def showEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         super().showEvent(event)
         # The map tab is hidden at startup, so Leaflet's cached container size

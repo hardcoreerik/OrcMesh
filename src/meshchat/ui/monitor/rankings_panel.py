@@ -63,6 +63,18 @@ class _RankRow(QWidget):
         self._detail_lbl.setText(detail)
         self._badge_lbl.setText(badge)
 
+    def set_selected(self, selected: bool) -> None:
+        # Dynamic property + stylesheet selector (see theme.py's
+        # #rankItem[selected="true"]) rather than setStyleSheet() directly —
+        # keeps the highlight in one place instead of duplicating the app's
+        # color palette here, and survives set_data() being called again on
+        # the next refresh.
+        if self.property("selected") == selected:
+            return
+        self.setProperty("selected", selected)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
     def mousePressEvent(self, event) -> None:
         # Defense in depth: update_rows() no longer destroys rows out from
         # under an in-flight click, but a periodic-rebuild + click race is
@@ -120,6 +132,7 @@ class RankingsPanel(QWidget):
 
         self._max_rows = max_rows
         self._rows: list[_RankRow] = []
+        self._selected_node_num: int | None = None
 
     # ------------------------------------------------------------------
 
@@ -150,6 +163,7 @@ class RankingsPanel(QWidget):
             self._rows, enumerate(items, 1)
         ):
             row.set_data(rank, node_num, name, badge, detail)
+            row.set_selected(node_num == self._selected_node_num)
             row.setVisible(True)
 
         # Hide rather than delete the surplus if this refresh has fewer rows
@@ -157,6 +171,13 @@ class RankingsPanel(QWidget):
         # needs them, so steady-state operation allocates no new widgets.
         for row in self._rows[len(items):]:
             row.setVisible(False)
+
+    def set_selected_node(self, node_num: int | None) -> None:
+        """Highlight whichever visible row currently represents node_num (if
+        any); remembered so it's reapplied on every future refresh too."""
+        self._selected_node_num = node_num
+        for row in self._rows:
+            row.set_selected(row._node_num == node_num)
 
     def is_flipped(self) -> bool:
         return not self._showing_a

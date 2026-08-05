@@ -92,6 +92,49 @@ class TestRowPooling:
         assert all(r.isHidden() for r in panel._rows)
 
 
+class TestSelectionHighlight:
+    def test_set_selected_node_highlights_matching_row(self):
+        panel = RankingsPanel("A", "B")
+        panel.update_rows(_items(5))
+        panel.set_selected_node(2)
+        assert panel._rows[2].property("selected") is True
+        assert all(
+            panel._rows[i].property("selected") is not True
+            for i in range(5) if i != 2
+        )
+
+    def test_selection_survives_a_refresh(self):
+        # The exact bug class this file already guards against for row
+        # identity: a refresh must not silently drop the highlight along
+        # with rebuilding row content.
+        panel = RankingsPanel("A", "B")
+        panel.update_rows(_items(5))
+        panel.set_selected_node(3)
+        panel.update_rows(_items(5, prefix="new"))
+        assert panel._rows[3].property("selected") is True
+
+    def test_changing_selection_clears_the_previous_row(self):
+        panel = RankingsPanel("A", "B")
+        panel.update_rows(_items(5))
+        panel.set_selected_node(1)
+        panel.set_selected_node(4)
+        assert panel._rows[1].property("selected") is not True
+        assert panel._rows[4].property("selected") is True
+
+    def test_selecting_none_clears_all_rows(self):
+        panel = RankingsPanel("A", "B")
+        panel.update_rows(_items(5))
+        panel.set_selected_node(2)
+        panel.set_selected_node(None)
+        assert all(row.property("selected") is not True for row in panel._rows)
+
+    def test_selected_node_not_present_highlights_nothing(self):
+        panel = RankingsPanel("A", "B")
+        panel.update_rows(_items(5))
+        panel.set_selected_node(999)
+        assert all(row.property("selected") is not True for row in panel._rows)
+
+
 class TestClickRacingLiveRefresh:
     """Reproduces the actual reported scenario end-to-end: a real QTimer
     driving refreshes on the Qt event loop, with a click delivered through

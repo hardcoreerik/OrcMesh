@@ -121,6 +121,18 @@ body.theme-light .leaflet-container {
 .leaflet-div-icon.mesh-marker-relayed { border: 2px solid #8B5CF6; border-radius: 4px;  background: rgba(139,92,246,0.25); font-size: 8px; }
 .leaflet-div-icon.mesh-marker-stale   { border: 1px solid #5A6690; border-radius: 50%; background: rgba(90,102,144,0.25); opacity:.7; font-size: 8px; }
 
+/* Selection ring, same for every marker status/color — placed after the
+   status rules above so equal specificity resolves in its favor. A bright
+   cyan glow independent of the marker's own color makes "this is the
+   selected node" unambiguous regardless of node type. */
+.leaflet-div-icon.mesh-marker-selected {
+  border-color: #00D4FF;
+  border-width: 3px;
+  box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.35), 0 0 10px 2px rgba(0, 212, 255, 0.65);
+  opacity: 1;
+  z-index: 1000 !important;
+}
+
 .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
   /* Colored text on a same-hue tinted background (the previous #00D4FF-on-
      #00D4FF) was low-contrast — solid dark text reads clearly regardless of
