@@ -303,29 +303,42 @@ class MeshtasticWorker(QObject):
     # PubSub subscriptions
     # -----------------------------------------------------------------------
 
+    def _subscriptions(self) -> tuple[tuple, ...]:
+        """(callback, topic) pairs. Single source of truth so subscribe and
+        unsubscribe can't drift apart and orphan a listener."""
+        return (
+            (self._on_text_received, "meshtastic.receive.text"),
+            (self._on_packet_received, "meshtastic.receive"),
+            (self._on_connection_established, "meshtastic.connection.established"),
+            (self._on_connection_lost, "meshtastic.connection.lost"),
+            (self._on_node_updated, "meshtastic.node.updated"),
+        )
+
     def _subscribe(self) -> None:
         if self._subscribed:
             return
-        pub.subscribe(self._on_text_received, "meshtastic.receive.text")
-        pub.subscribe(self._on_packet_received, "meshtastic.receive")
-        pub.subscribe(self._on_connection_established, "meshtastic.connection.established")
-        pub.subscribe(self._on_connection_lost, "meshtastic.connection.lost")
-        pub.subscribe(self._on_node_updated, "meshtastic.node.updated")
+        for callback, topic in self._subscriptions():
+            pub.subscribe(callback, topic)
         self._subscribed = True
 
     def _unsubscribe(self) -> None:
         if not self._subscribed:
             return
-        try:
-            pub.unsubscribe(self._on_text_received, "meshtastic.receive.text")
-            pub.unsubscribe(self._on_packet_received, "meshtastic.receive")
-            pub.unsubscribe(self._on_connection_established, "meshtastic.connection.established")
-            pub.unsubscribe(self._on_connection_lost, "meshtastic.connection.lost")
-            pub.unsubscribe(self._on_node_updated, "meshtastic.node.updated")
-        except Exception as exc:
-            # Never let teardown raise, but don't discard it silently either —
-            # a failed unsubscribe leaks callbacks into the next connection.
-            log.warning("PubSub unsubscribe failed: %s", exc)
+        # Each topic gets its own try/except: a single shared one meant that a
+        # failure on the first topic silently skipped the remaining four,
+        # leaking those callbacks into the next connection.
+        for callback, topic in self._subscriptions():
+            try:
+                pub.unsubscribe(callback, topic)
+            except Exception as exc:
+                # Never let teardown raise, but don't discard it silently.
+                log.warning("PubSub unsubscribe failed for %s: %s", topic, exc)
+
+        # Deliberately cleared even if an unsubscribe failed. Leaving this True
+        # to allow a retry would make _subscribe() short-circuit on the next
+        # connect, so the app would reconnect with no callbacks at all and
+        # receive nothing — far worse than a leaked callback. PyPubSub also
+        # de-duplicates identical listeners, so re-subscribing is harmless.
         self._subscribed = False
 
     # -----------------------------------------------------------------------

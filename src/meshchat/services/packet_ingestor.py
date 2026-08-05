@@ -139,6 +139,10 @@ class PacketIngestor(QObject):
         # 10k-element list on every packet once the buffer was full.
         self._recent_max = 10_000
         self._recent_packets: deque[NetworkPacket] = deque(maxlen=self._recent_max)
+        # Appended from the worker thread, snapshotted from the GUI thread
+        # (CSV export). Copying a deque while it is being appended to can
+        # raise "deque mutated during iteration", so both sides take this.
+        self._recent_lock = Lock()
 
     def ingest_raw(self, raw: dict) -> None:
         """
@@ -154,7 +158,8 @@ class PacketIngestor(QObject):
             return
 
         # Update ring buffer
-        self._recent_packets.append(pkt)
+        with self._recent_lock:
+            self._recent_packets.append(pkt)
 
         # Update session counter
         self._session.packet_count += 1
@@ -476,7 +481,8 @@ class PacketIngestor(QObject):
             return self._nodes.get(node_num)
 
     def get_recent_packets(self) -> list[NetworkPacket]:
-        return list(self._recent_packets)
+        with self._recent_lock:
+            return list(self._recent_packets)
 
     def update_node_from_db(self, node_num: int, nodes_by_num: dict) -> None:
         """Merge NodeDB data into the in-memory snapshot."""

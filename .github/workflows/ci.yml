@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege: this workflow only ever reads the repo. Declaring it here
+# means the run does not inherit whatever the repo/org default happens to be.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -21,6 +26,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Later steps run PR-authored code (`pip install -e .` executes
+          # setup hooks, then pytest). checkout persists the token in git
+          # config by default, which that code could read — nothing here
+          # needs authenticated git, so don't persist it.
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
