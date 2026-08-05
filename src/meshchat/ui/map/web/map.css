@@ -18,6 +18,7 @@ body.theme-dark #map {
 }
 body.theme-dark .leaflet-pane.leaflet-marker-pane,
 body.theme-dark .leaflet-pane.leaflet-popup-pane,
+body.theme-dark .leaflet-pane.leaflet-tooltip-pane,
 body.theme-dark .leaflet-control-container {
   filter: hue-rotate(-185deg) saturate(1.43) brightness(1.11);
 }
@@ -97,15 +98,59 @@ body.theme-light .leaflet-container {
    Leaflet's own .leaflet-div-icon default (white bg, gray border) regardless
    of stylesheet load order — equal-specificity same-order rules previously
    let Leaflet's default silently paint over every marker. */
-.leaflet-div-icon.mesh-marker-local   { border: 3px solid #00FF88; border-radius: 50%; background: rgba(0,255,136,0.30); }
-.leaflet-div-icon.mesh-marker-direct  { border: 2px solid #00D4FF; border-radius: 50%; background: rgba(0,212,255,0.20); }
-.leaflet-div-icon.mesh-marker-relayed { border: 2px solid #8B5CF6; border-radius: 4px;  background: rgba(139,92,246,0.20); }
-.leaflet-div-icon.mesh-marker-stale   { border: 1px solid #5A6690; border-radius: 50%; background: rgba(90,102,144,0.20); opacity:.6; }
+.leaflet-div-icon.mesh-marker-local,
+.leaflet-div-icon.mesh-marker-direct,
+.leaflet-div-icon.mesh-marker-relayed,
+.leaflet-div-icon.mesh-marker-stale {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Consolas, monospace;
+  font-weight: 700;
+  overflow: hidden;
+  /* Badge backgrounds are a light tint of the border color (green/cyan/
+     purple) — colored text of the same hue on top of that was low-contrast
+     ("green on green"). Solid near-black text reads clearly against every
+     badge color instead, with a faint light halo so it still holds up
+     against the darkest (stale/relayed) backgrounds. */
+  color: #0A0F1E;
+  text-shadow: 0 0 2px rgba(255,255,255,0.55);
+}
+.leaflet-div-icon.mesh-marker-local   { border: 3px solid #00FF88; border-radius: 50%; background: rgba(0,255,136,0.35); font-size: 9px; }
+.leaflet-div-icon.mesh-marker-direct  { border: 2px solid #00D4FF; border-radius: 50%; background: rgba(0,212,255,0.25); font-size: 8px; }
+.leaflet-div-icon.mesh-marker-relayed { border: 2px solid #8B5CF6; border-radius: 4px;  background: rgba(139,92,246,0.25); font-size: 8px; }
+.leaflet-div-icon.mesh-marker-stale   { border: 1px solid #5A6690; border-radius: 50%; background: rgba(90,102,144,0.25); opacity:.7; font-size: 8px; }
 
 .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
-  background: rgba(0,212,255,0.15); color: #00D4FF; border: 1px solid #00D4FF;
+  /* Colored text on a same-hue tinted background (the previous #00D4FF-on-
+     #00D4FF) was low-contrast — solid dark text reads clearly regardless of
+     the tier's border/background color. */
+  background: rgba(0,212,255,0.15); color: #0A0F1E; border: 1px solid #00D4FF;
   font-family: Consolas, monospace; font-size: 11px; font-weight: 700;
+  text-shadow: 0 0 2px rgba(255,255,255,0.55);
 }
 .marker-cluster-small  { background: rgba(0,212,255,0.08); }
 .marker-cluster-medium { background: rgba(139,92,246,0.08); }
 .marker-cluster-large  { background: rgba(255,184,0,0.08); }
+
+/* Hover-only full-name label — the pin itself already shows an abbreviated
+   name (see .mesh-marker-* above); this is just disambiguation on hover. */
+.leaflet-tooltip.mesh-marker-label {
+  background: rgba(7, 13, 31, 0.78);
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  border-radius: 3px;
+  color: #C8D8FF;
+  font-family: "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  box-shadow: none;
+  pointer-events: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.leaflet-tooltip-top.mesh-marker-label::before {
+  border-top-color: rgba(7, 13, 31, 0.78);
+}

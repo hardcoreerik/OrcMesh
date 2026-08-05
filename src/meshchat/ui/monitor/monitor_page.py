@@ -43,7 +43,10 @@ class MonitorPage(QWidget):
     Right:  KPI cards + hop panels + distribution panels + node inspector
     """
 
-    node_selected = Signal(int)   # node_num, for cross-page navigation
+    # object, not int: see MapBridge.node_clicked — a real Meshtastic
+    # node_num can exceed a signed 32-bit Qt int signal's range, and this
+    # is fed directly from MapWidget.node_clicked (also object-typed).
+    node_selected = Signal(object)   # node_num, for cross-page navigation
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,6 +110,7 @@ class MonitorPage(QWidget):
 
         self._map_widget = MapWidget()
         self._map_widget.setMinimumHeight(200)
+        self._map_widget.node_clicked.connect(self._on_ranking_node_selected)
         left_layout.addWidget(self._map_widget, 2)
 
         self._chart = PacketActivityChart()

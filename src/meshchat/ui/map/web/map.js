@@ -65,8 +65,32 @@ function toggleMapTheme() {
 if (typeof L.markerClusterGroup !== "undefined") {
   clusterGroup = L.markerClusterGroup({
     showCoverageOnHover: false,
-    maxClusterRadius: 40,
+    // Keep the default (true). Nodes sharing the exact same lat/lon (e.g.
+    // multiple radios at one fixed site) have 0px distance regardless of
+    // zoom, so maxClusterRadius's zoom-based decluster below can't ever
+    // separate them — spiderfying is the only way those pins/popups/clicks
+    // stay reachable at max zoom. A previous attempt disabled this to avoid
+    // a visual glitch (leg lines with no visible marker at the end); that
+    // traded a real reachability bug for a cosmetic one, which is the wrong
+    // side of that trade — leaving it on and revisiting the glitch
+    // separately if it recurs.
     spiderfyOnMaxZoom: true,
+    chunkedLoading: true,
+    removeOutsideVisibleBounds: true,
+    // Zoom-only, no dependency on live node count: leaflet.markercluster
+    // reads this function once per zoom level, inside _generateInitialClusters()
+    // — called only from onAdd() (map.addLayer(clusterGroup) below, while
+    // `nodes` is still empty) and clearNodes()'s clearLayers(). A closure
+    // reading Object.keys(nodes).length would freeze at whatever the count
+    // was at that one-time call, not track the mesh growing afterward via
+    // updateNode()/addLayer() — verified against the bundled
+    // vendor/markercluster/leaflet.markercluster.js source. A static zoom
+    // curve avoids that trap: real-world GPS points are virtually always
+    // more than a few px apart by z15, which keeps on-screen circle count
+    // reasonable without relying on a value that can't safely vary at runtime.
+    maxClusterRadius: function(zoom) {
+      return zoom >= 15 ? 1 : 50;
+    },
   });
   map.addLayer(clusterGroup);
 } else {
@@ -74,20 +98,30 @@ if (typeof L.markerClusterGroup !== "undefined") {
 }
 
 // ── Marker helpers ─────────────────────────────────────────────────────────
+function badgeLabel(data) {
+  // Short enough to actually fit inside a small circle — first few
+  // alphanumeric characters of the display name, upper-cased.
+  var name = (data.name || "").replace(/[^A-Za-z0-9]/g, "");
+  if (name) return name.slice(0, 4).toUpperCase();
+  return "#" + (Math.abs(data.node_num) % 1000);
+}
+
 function markerIcon(data) {
   var cssClass = "mesh-marker-relayed";
-  var size = 12;
+  var size = 26;
   if (data.is_local) {
     cssClass = "mesh-marker-local";
-    size = 16;
+    size = 32;
   } else if (data.hops_used === 0) {
     cssClass = "mesh-marker-direct";
-    size = 14;
+    size = 30;
   } else if (data.last_heard_s !== null && data.last_heard_s > 3600) {
     cssClass = "mesh-marker-stale";
+    size = 24;
   }
   return L.divIcon({
     className: cssClass,
+    html: "<span>" + escapeHtml(badgeLabel(data)) + "</span>",
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
     popupAnchor: [0, -(size / 2 + 2)],
@@ -103,7 +137,7 @@ function buildPopup(data) {
     : "—";
 
   return "<strong>" + escapeHtml(data.name) + "</strong>" +
-    "<div class='meta'>Node " + data.node_num + (data.role ? "  ·  " + data.role : "") + "</div>" +
+    "<div class='meta'>Node " + data.node_num + (data.role ? "  ·  " + escapeHtml(data.role) : "") + "</div>" +
     "<div class='detail'>Last heard: " + ageStr + "</div>" +
     "<div class='detail'>Hops: " + hopsStr + "</div>" +
     "<a class='inspect-btn' onclick='nodeClicked(" + data.node_num + ")'>Inspect ↗</a>";
@@ -118,6 +152,10 @@ function nodeClicked(nodeNum) {
   if (bridge) bridge.nodeClicked(nodeNum);
 }
 
+function labelText(data) {
+  return data.name || ("!" + data.node_num.toString(16));
+}
+
 // ── Public API called from Python via page.runJavaScript ───────────────────
 function updateNode(data) {
   if (!data || data.lat === null || data.lat === undefined || data.lon === null || data.lon === undefined) {
@@ -130,10 +168,19 @@ function updateNode(data) {
     existing.marker.setLatLng([data.lat, data.lon]);
     existing.marker.setIcon(markerIcon(data));
     existing.marker.bindPopup(buildPopup(data));
+    existing.marker.setTooltipContent(escapeHtml(labelText(data)));
     existing.data = data;
   } else {
     var marker = L.marker([data.lat, data.lon], { icon: markerIcon(data) });
     marker.bindPopup(buildPopup(data));
+    // The badge itself already shows an abbreviated name (see markerIcon());
+    // this tooltip is hover-only and shows the full name for disambiguation.
+    marker.bindTooltip(escapeHtml(labelText(data)), {
+      direction: "top",
+      className: "mesh-marker-label",
+      offset: [0, -8],
+    });
+    marker.on("click", function() { nodeClicked(data.node_num); });
     clusterGroup.addLayer(marker);
     nodes[data.node_num] = { marker: marker, data: data };
   }

@@ -144,6 +144,12 @@ class MainWindow(QMainWindow):
         self._nodes_page.favorite_requested.connect(self._controller.set_favorite)
         self._nodes_page.remove_node_requested.connect(self._controller.remove_node)
 
+        # Clicking a node on the Monitor page (ranking row or map pin) keeps
+        # the Nodes page's own selection in sync, so switching there later
+        # already shows/sorts around the same node — without yanking the
+        # user away from the map they're currently looking at.
+        self._monitor_page.node_selected.connect(self._nodes_page.select_node)
+
         # Spectrum page (RTL-SDR waterfall)
         from meshchat.ui.spectrum.spectrum_page import SpectrumPage
         self._spectrum_page = SpectrumPage()

@@ -17,7 +17,12 @@ class MapBridge(QObject):
     JS → Python:  JS calls bridge.slotName(args)
     """
 
-    node_clicked   = Signal(int)    # node_num from JS
+    # object, not int: Meshtastic node_num is a 32-bit *unsigned* value and
+    # can exceed 0x7FFFFFFF (real hardware IDs do) — a Qt-typed int signal
+    # is C++ int32 and silently wraps to negative, breaking the node_num ==
+    # dict-key match downstream. object carries the Python int through
+    # untouched.
+    node_clicked   = Signal(object)  # node_num from JS
     map_ready      = Signal()       # JS map finished loading
     theme_changed  = Signal(str)    # "light" or "dark", from the in-page toggle button
 
@@ -77,8 +82,12 @@ class MapBridge(QObject):
 
     # ── JS → Python ────────────────────────────────────────────────────
 
-    @Slot(int)
+    @Slot("qlonglong")
     def nodeClicked(self, node_num: int) -> None:  # noqa: N802 (Qt naming)
+        # "qlonglong" (64-bit signed), not "int" (32-bit signed) — see the
+        # node_clicked Signal(object) comment above; JS delivers node_num as
+        # a plain number, and a 32-bit slot type would truncate/wrap it
+        # before this method ever sees it.
         log.debug("Map: node clicked %d", node_num)
         self.node_clicked.emit(node_num)
 
