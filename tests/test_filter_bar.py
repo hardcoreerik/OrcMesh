@@ -42,3 +42,16 @@ class TestFilterBarReset:
         bar.filter_changed.connect(received.append)
         bar._reset()
         assert len(received) == 1
+
+    def test_reset_preserves_a_combo_that_was_already_blocked(self):
+        # blockSignals(True) returns the *previous* blocked state — reset
+        # must restore that, not unconditionally force signals back on,
+        # or a combo deliberately blocked by other code becomes silently
+        # un-blocked as a side effect of an unrelated Reset click.
+        bar = FilterBar()
+        bar._src.blockSignals(True)
+        try:
+            bar._reset()
+            assert bar._src.signalsBlocked() is True
+        finally:
+            bar._src.blockSignals(False)

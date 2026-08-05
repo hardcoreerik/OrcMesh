@@ -93,13 +93,19 @@ class FilterBar(QWidget):
         # naive reset can emit filter_changed up to 3 extra times before the
         # explicit call below — each one triggering a full rankings rebuild
         # in MonitorPage. Block signals during the resets and emit once.
-        for combo in (self._age, self._src, self._pkt):
-            combo.blockSignals(True)
+        #
+        # blockSignals(True) returns the combo's *previous* blocked state,
+        # not just an "off" toggle — unconditionally restoring to False
+        # would wrongly un-block a combo that was already blocked by
+        # something else before _reset() ran. Save and restore each one's
+        # actual prior state instead.
+        combos = (self._age, self._src, self._pkt)
+        previous = [combo.blockSignals(True) for combo in combos]
         try:
             self._age.setCurrentIndex(2)
             self._src.setCurrentIndex(0)
             self._pkt.setCurrentIndex(0)
         finally:
-            for combo in (self._age, self._src, self._pkt):
-                combo.blockSignals(False)
+            for combo, was_blocked in zip(combos, previous):
+                combo.blockSignals(was_blocked)
         self._emit()

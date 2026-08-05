@@ -436,6 +436,7 @@ class MainWindow(QMainWindow):
 
     def _on_message_status(self, local_id: str, packet_id: int | None, status: MessageStatus, detail: str) -> None:
         self._chat_view.update_message_status(local_id, packet_id, status)
+        self._store.update_message_status(local_id, packet_id, status)
 
     def _on_error(self, err) -> None:
         self._status_bar.showMessage(f"⚠  {err.title}: {err.message}", 8000)

@@ -167,7 +167,7 @@ class TestSendFailure:
         statuses = []
         w.message_status_changed.connect(lambda lid, pid, st, detail: statuses.append((lid, pid, st)))
         w.send_channel_text("hi", 0, "local-1")
-        assert statuses and statuses[0][0] == "local-1" and statuses[0][1] == 4242
+        assert statuses == [("local-1", 4242, MessageStatus.ACCEPTED_BY_RADIO)]
 
     def test_failed_send_reports_failed_status_with_the_local_id(self):
         w = _connected_worker()
