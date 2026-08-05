@@ -31,6 +31,7 @@ below — they're cited here for provenance, not as a dependency.
 - Rankings (last heard, most packets, nearby/farthest, signal, messages)
 - Distribution panels (packet type, channel, role, hardware)
 - Node inspector (identity, signal/hops, telemetry)
+- Map pin labels, zoom-based clustering, click-to-inspect cross-page sync
 
 **Beyond both original specs:**
 - GPL-3.0 relicense (required once linking the GPL-3.0-only `meshtastic`
@@ -41,8 +42,7 @@ below — they're cited here for provenance, not as a dependency.
 
 ## In progress
 
-- Map pin labels, zoom-based clustering, click-to-inspect cross-page sync
-  (branch `feature/map-pin-labels`) — move to Shipped once merged.
+Nothing currently in flight.
 
 ## Near-term
 
