@@ -303,11 +303,18 @@ class MonitorPage(QWidget):
         for p in pkts:
             sender = p.sender_num
             is_direct = p.is_direct_rf
-            if is_direct and p.rx_snr is not None:
-                direct_snrs.append(p.rx_snr)
+            if is_direct:
+                # Sampled independently: a direct packet can carry RSSI without
+                # SNR, and previously such packets were dropped from the RSSI
+                # median entirely because RSSI was nested under the SNR check.
+                if p.rx_snr is not None:
+                    direct_snrs.append(p.rx_snr)
                 if p.rx_rssi is not None:
                     direct_rssis.append(p.rx_rssi)
-            if not sender:
+            # `is None`, not truthiness — node number 0 is a legitimate sender
+            # and the ingestor already tracks it. A falsy check silently
+            # excluded it from every ranking.
+            if sender is None:
                 continue
             pkt_counts[sender] = pkt_counts.get(sender, 0) + 1
             if p.portnum == PORTNUM_TEXT:
@@ -384,14 +391,17 @@ class MonitorPage(QWidget):
         self._card_infra.set_value(str(infra))
         self._card_clients.set_value(str(clients))
 
-        # Signal — median of the direct-RF samples gathered in the pass above
+        # Signal — median of the direct-RF samples gathered in the pass above.
+        # Guarded independently so an RSSI-only sample set still updates the
+        # RSSI field instead of being suppressed by an empty SNR list.
         if direct_snrs:
             snrs = sorted(direct_snrs)
+            self._card_signal.set_field("SNR", f"{snrs[len(snrs) // 2]:.1f} dB")
+        if direct_rssis:
             rssis = sorted(direct_rssis)
-            med_snr = snrs[len(snrs) // 2]
-            med_rssi = rssis[len(rssis) // 2] if rssis else None
-            self._card_signal.set_field("SNR", f"{med_snr:.1f} dB")
-            self._card_signal.set_field("RSSI", f"{med_rssi} dBm" if med_rssi else "—")
+            # `is not None`, not truthiness: 0 dBm is a legitimate reading.
+            med_rssi = rssis[len(rssis) // 2]
+            self._card_signal.set_field("RSSI", f"{med_rssi} dBm" if med_rssi is not None else "—")
         self._card_signal.set_field("Noise", "N/A")
 
         # Hop analytics

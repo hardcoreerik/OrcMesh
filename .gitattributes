@@ -16,6 +16,7 @@
 *.zip   binary
 *.db    binary
 
-# Keep generated/vendored assets out of language stats and diffs
+# Keep vendored and documentation assets out of language statistics.
+# (These attributes affect stats only — only linguist-generated collapses diffs.)
 src/meshchat/ui/map/web/vendor/**  linguist-vendored
 docs/screenshots/**               linguist-documentation
