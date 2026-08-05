@@ -198,6 +198,11 @@ class MainWindow(QMainWindow):
         # app always showing its saved NodeDB rather than starting blank.
         self._ingestor.seed_from_store(self._store.read_nodes(), self._store.read_latest_positions())
 
+        # Trim old packet/position/telemetry rows once per launch. Without
+        # this the monitor tables grow without bound for as long as the app
+        # is ever used. Node identities and chat history are never pruned.
+        QTimer.singleShot(5_000, self._prune_old_data)
+
         # ── Status bar ────────────────────────────────────────────────
         self._status_bar = self.statusBar()
         self._status_bar.showMessage("Ready — connect to a Meshtastic radio to begin")
@@ -254,6 +259,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------
+
+    def _prune_old_data(self) -> None:
+        """Deferred so it never delays the window appearing."""
+        deleted = self._store.prune()
+        if deleted:
+            total = sum(deleted.values())
+            log.info("Pruned %d old monitor row(s): %s", total, deleted)
 
     def _export_packets(self) -> None:
         from meshchat.services.export_service import ExportService

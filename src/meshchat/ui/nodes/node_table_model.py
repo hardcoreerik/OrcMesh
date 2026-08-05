@@ -8,6 +8,7 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtGui import QColor
 
 from meshchat.models.node_snapshot import NodeSnapshot
+from meshchat.utils.time_format import relative_age
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ _CELL_RENDERERS = (
     lambda n: n.node_id or f"!{n.node_num:08x}",
     lambda n: n.role or "—",
     lambda n: n.hw_model or "—",
-    lambda n: _age(n.last_heard),
+    lambda n: relative_age(n.last_heard),
     lambda n: "✓" if n.is_direct else "",
     lambda n: str(n.last_hops_used) if n.last_hops_used is not None else "—",
     lambda n: f"{n.last_snr:.1f}" if n.last_snr is not None else "—",
@@ -44,19 +45,6 @@ _CELL_RENDERERS = (
     lambda n: str(n.text_count),
     _source,
 )
-
-
-def _age(ts: datetime | None) -> str:
-    if ts is None:
-        return "—"
-    delta = (datetime.now(timezone.utc) - ts).total_seconds()
-    if delta < 60:
-        return f"{int(delta)}s"
-    if delta < 3600:
-        return f"{int(delta // 60)}m"
-    if delta < 86400:
-        return f"{int(delta // 3600)}h"
-    return f"{int(delta // 86400)}d"
 
 
 class NodeTableModel(QAbstractTableModel):

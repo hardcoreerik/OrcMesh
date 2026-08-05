@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -15,18 +14,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from meshchat.utils.time_format import relative_age
+
 log = logging.getLogger(__name__)
 
 
-def _age(ts: datetime | None) -> str:
-    if ts is None:
-        return "—"
-    delta = (datetime.now(timezone.utc) - ts).total_seconds()
-    if delta < 60:
-        return f"{int(delta)}s ago"
-    if delta < 3600:
-        return f"{int(delta / 60)}m ago"
-    return f"{int(delta / 3600)}h ago"
 
 
 class _Section(QWidget):
@@ -205,8 +197,8 @@ class NodeInspector(QWidget):
         self._role.setText(snapshot.role or "—")
         self._hw.setText(snapshot.hw_model or "—")
 
-        self._first_seen.setText(_age(snapshot.first_seen))
-        self._last_heard.setText(_age(snapshot.last_heard))
+        self._first_seen.setText(relative_age(snapshot.first_seen, suffix=" ago"))
+        self._last_heard.setText(relative_age(snapshot.last_heard, suffix=" ago"))
         self._pkt_count.setText(str(snapshot.packet_count))
         self._text_count.setText(str(snapshot.text_count))
         self._rf_count.setText(str(snapshot.rf_count))
@@ -245,7 +237,7 @@ class NodeInspector(QWidget):
         self._pressure.setText(
             f"{snapshot.barometric_pressure_hpa:.1f} hPa" if snapshot.barometric_pressure_hpa is not None else "—"
         )
-        self._tel_age.setText(_age(snapshot.last_telemetry_at))
+        self._tel_age.setText(relative_age(snapshot.last_telemetry_at, suffix=" ago"))
 
     def clear(self) -> None:
         self._node_num = None

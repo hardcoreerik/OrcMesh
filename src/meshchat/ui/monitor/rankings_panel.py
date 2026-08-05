@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -15,18 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+
 log = logging.getLogger(__name__)
-
-
-def _age_str(ts: datetime | None) -> str:
-    if ts is None:
-        return "?"
-    delta = (datetime.now(timezone.utc) - ts).total_seconds()
-    if delta < 60:
-        return f"{int(delta)}s"
-    if delta < 3600:
-        return f"{int(delta / 60)}m"
-    return f"{int(delta / 3600)}h"
 
 
 class _RankRow(QWidget):

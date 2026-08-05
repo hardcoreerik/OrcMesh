@@ -7,9 +7,9 @@ from meshchat.models.node_snapshot import NodeSnapshot
 from meshchat.ui.nodes.node_table_model import (
     _CELL_RENDERERS,
     _COLUMNS,
-    _age,
     _source,
 )
+from meshchat.utils.time_format import relative_age as _age
 
 
 def _node(**kwargs) -> NodeSnapshot:

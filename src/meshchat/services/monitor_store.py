@@ -5,7 +5,7 @@ import logging
 import queue
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,10 @@ from meshchat.models.telemetry_sample import TelemetrySample
 
 log = logging.getLogger(__name__)
 APP_NAME = "MeshChat"
+
+#: Days of packet/position/telemetry history to keep. Node identities and
+#: chat messages are never pruned.
+DEFAULT_RETAIN_DAYS = 30
 
 
 def _db_path() -> Path:
@@ -189,6 +193,41 @@ class MonitorStore:
         except Exception as exc:
             log.error("MonitorStore.read_messages failed: %s", exc)
             return []
+
+    def prune(self, retain_days: int = DEFAULT_RETAIN_DAYS) -> dict[str, int]:
+        """Delete high-volume rows older than `retain_days`.
+
+        Packets, positions, and telemetry accumulate forever otherwise — a
+        monitor left running writes them continuously, and nothing ever
+        removed them. `nodes` and `messages` are deliberately exempt: the node
+        database is the app's memory of the mesh, and chat history is user
+        content that must not be silently discarded.
+
+        Returns rows deleted per table. Safe to call with retain_days <= 0,
+        which is treated as "keep everything".
+        """
+        if retain_days <= 0:
+            return {}
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retain_days)).isoformat()
+        deleted: dict[str, int] = {}
+        try:
+            conn = self._read_conn()
+            with conn:
+                for table in ("packets", "positions", "telemetry"):
+                    cur = conn.execute(
+                        f"DELETE FROM {table} WHERE observed_at < ?", (cutoff,)  # noqa: S608
+                    )
+                    if cur.rowcount > 0:
+                        deleted[table] = cur.rowcount
+            conn.close()
+            if deleted:
+                total = sum(deleted.values())
+                log.info("Pruned %d row(s) older than %d days: %s",
+                         total, retain_days, deleted)
+        except Exception as exc:
+            log.error("MonitorStore.prune failed: %s", exc)
+        return deleted
 
     def shutdown(self, timeout: float = 5.0) -> None:
         self._stop.set()
