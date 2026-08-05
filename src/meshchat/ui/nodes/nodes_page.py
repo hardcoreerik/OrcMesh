@@ -155,6 +155,11 @@ class NodesPage(QWidget):
     def _on_search(self, text: str) -> None:
         self._proxy.setFilterFixedString(text)
         self._count_lbl.setText(f"{self._proxy.rowCount()} node(s)")
+        # Filtering re-maps proxy rows too, which can drop the current index
+        # the same way a model reset does (e.g. the selected node gets
+        # filtered out, then the filter is cleared) — reapply it here too.
+        if self._selected_node_num is not None:
+            self._select_row(self._selected_node_num, scroll=False)
 
     def _on_row_changed(self, current, previous) -> None:
         src_idx = self._proxy.mapToSource(current)

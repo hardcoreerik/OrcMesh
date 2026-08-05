@@ -65,12 +65,16 @@ function toggleMapTheme() {
 if (typeof L.markerClusterGroup !== "undefined") {
   clusterGroup = L.markerClusterGroup({
     showCoverageOnHover: false,
-    // The default (true) spiderfies an already-tiny cluster into radiating
-    // legs at max zoom — with divIcon markers that produced a visible glitch
-    // (legs drawn with no marker at the end). Zoom-based declustering below
-    // already gets individual pins to separate out, so spiderfying on top of
-    // that is unnecessary and the safer default here is off.
-    spiderfyOnMaxZoom: false,
+    // Keep the default (true). Nodes sharing the exact same lat/lon (e.g.
+    // multiple radios at one fixed site) have 0px distance regardless of
+    // zoom, so maxClusterRadius's zoom-based decluster below can't ever
+    // separate them — spiderfying is the only way those pins/popups/clicks
+    // stay reachable at max zoom. A previous attempt disabled this to avoid
+    // a visual glitch (leg lines with no visible marker at the end); that
+    // traded a real reachability bug for a cosmetic one, which is the wrong
+    // side of that trade — leaving it on and revisiting the glitch
+    // separately if it recurs.
+    spiderfyOnMaxZoom: true,
     chunkedLoading: true,
     removeOutsideVisibleBounds: true,
     // Zoom-only, no dependency on live node count: leaflet.markercluster
