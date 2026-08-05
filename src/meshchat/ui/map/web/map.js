@@ -61,15 +61,6 @@ function toggleMapTheme() {
   if (bridge && bridge.themeChanged) bridge.themeChanged(next);
 }
 
-// Max on-screen individual markers before we prefer merging into clusters.
-// Leaflet.markercluster has no native "cap visible marker count" option — the
-// closest lever is maxClusterRadius (in screen pixels), which we vary by both
-// zoom and current node total below. Below the cap, markers fully separate
-// by z14 (true for virtually all real-world GPS spacing); above it, some
-// clustering is kept even at high zoom so a big mesh never tries to paint
-// hundreds of overlapping circles at once.
-var MAX_UNCLUSTERED_NODES = 100;
-
 // Cluster group
 if (typeof L.markerClusterGroup !== "undefined") {
   clusterGroup = L.markerClusterGroup({
@@ -82,13 +73,19 @@ if (typeof L.markerClusterGroup !== "undefined") {
     spiderfyOnMaxZoom: false,
     chunkedLoading: true,
     removeOutsideVisibleBounds: true,
+    // Zoom-only, no dependency on live node count: leaflet.markercluster
+    // reads this function once per zoom level, inside _generateInitialClusters()
+    // — called only from onAdd() (map.addLayer(clusterGroup) below, while
+    // `nodes` is still empty) and clearNodes()'s clearLayers(). A closure
+    // reading Object.keys(nodes).length would freeze at whatever the count
+    // was at that one-time call, not track the mesh growing afterward via
+    // updateNode()/addLayer() — verified against the bundled
+    // vendor/markercluster/leaflet.markercluster.js source. A static zoom
+    // curve avoids that trap: real-world GPS points are virtually always
+    // more than a few px apart by z15, which keeps on-screen circle count
+    // reasonable without relying on a value that can't safely vary at runtime.
     maxClusterRadius: function(zoom) {
-      var total = Object.keys(nodes).length;
-      if (total <= MAX_UNCLUSTERED_NODES) {
-        return zoom >= 14 ? 1 : 60;
-      }
-      // Large mesh: keep merging longer, and never fully disable clustering.
-      return zoom >= 17 ? 25 : 70;
+      return zoom >= 15 ? 1 : 50;
     },
   });
   map.addLayer(clusterGroup);

@@ -108,16 +108,26 @@ body.theme-light .leaflet-container {
   font-family: Consolas, monospace;
   font-weight: 700;
   overflow: hidden;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.85);
+  /* Badge backgrounds are a light tint of the border color (green/cyan/
+     purple) — colored text of the same hue on top of that was low-contrast
+     ("green on green"). Solid near-black text reads clearly against every
+     badge color instead, with a faint light halo so it still holds up
+     against the darkest (stale/relayed) backgrounds. */
+  color: #0A0F1E;
+  text-shadow: 0 0 2px rgba(255,255,255,0.55);
 }
-.leaflet-div-icon.mesh-marker-local   { border: 3px solid #00FF88; border-radius: 50%; background: rgba(0,255,136,0.35); color: #EFFFF6; font-size: 9px; }
-.leaflet-div-icon.mesh-marker-direct  { border: 2px solid #00D4FF; border-radius: 50%; background: rgba(0,212,255,0.25); color: #EAFBFF; font-size: 8px; }
-.leaflet-div-icon.mesh-marker-relayed { border: 2px solid #8B5CF6; border-radius: 4px;  background: rgba(139,92,246,0.25); color: #F1ECFF; font-size: 8px; }
-.leaflet-div-icon.mesh-marker-stale   { border: 1px solid #5A6690; border-radius: 50%; background: rgba(90,102,144,0.25); opacity:.7; color: #DCE1F2; font-size: 8px; }
+.leaflet-div-icon.mesh-marker-local   { border: 3px solid #00FF88; border-radius: 50%; background: rgba(0,255,136,0.35); font-size: 9px; }
+.leaflet-div-icon.mesh-marker-direct  { border: 2px solid #00D4FF; border-radius: 50%; background: rgba(0,212,255,0.25); font-size: 8px; }
+.leaflet-div-icon.mesh-marker-relayed { border: 2px solid #8B5CF6; border-radius: 4px;  background: rgba(139,92,246,0.25); font-size: 8px; }
+.leaflet-div-icon.mesh-marker-stale   { border: 1px solid #5A6690; border-radius: 50%; background: rgba(90,102,144,0.25); opacity:.7; font-size: 8px; }
 
 .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
-  background: rgba(0,212,255,0.15); color: #00D4FF; border: 1px solid #00D4FF;
+  /* Colored text on a same-hue tinted background (the previous #00D4FF-on-
+     #00D4FF) was low-contrast — solid dark text reads clearly regardless of
+     the tier's border/background color. */
+  background: rgba(0,212,255,0.15); color: #0A0F1E; border: 1px solid #00D4FF;
   font-family: Consolas, monospace; font-size: 11px; font-weight: 700;
+  text-shadow: 0 0 2px rgba(255,255,255,0.55);
 }
 .marker-cluster-small  { background: rgba(0,212,255,0.08); }
 .marker-cluster-medium { background: rgba(139,92,246,0.08); }
