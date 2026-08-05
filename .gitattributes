@@ -1,0 +1,21 @@
+# Normalise line endings so commits stop emitting CRLF warnings and diffs
+# stay clean between Windows checkouts and CI's Linux/Windows runners.
+* text=auto eol=lf
+
+# Windows-only files that genuinely want CRLF
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Binary — never touch these
+*.png   binary
+*.ico   binary
+*.jpg   binary
+*.gif   binary
+*.pdf   binary
+*.zip   binary
+*.db    binary
+
+# Keep generated/vendored assets out of language stats and diffs
+src/meshchat/ui/map/web/vendor/**  linguist-vendored
+docs/screenshots/**               linguist-documentation

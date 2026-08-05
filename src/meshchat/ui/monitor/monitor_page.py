@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from meshchat.analytics.packet_classifier import PORTNUM_TEXT
 from meshchat.controllers.meshtastic_controller import ConnectionState
 from meshchat.models.network_packet import NetworkPacket
 from meshchat.models.node_snapshot import NodeSnapshot
@@ -291,11 +292,32 @@ class MonitorPage(QWidget):
             for n in heard[:_ROW_LIMIT]
         ])
 
-        # Most Packets
+        # One pass over the packet buffer for every per-sender statistic below.
+        # This runs on a 2-second timer over up to 10k packets, and previously
+        # made four separate full passes (counts, SNR, text counts, direct RF).
         pkt_counts: dict[int, int] = {}
+        direct_snr: dict[int, float] = {}
+        msg_counts: dict[int, int] = {}
+        direct_snrs: list[float] = []
+        direct_rssis: list[int] = []
         for p in pkts:
-            if p.sender_num:
-                pkt_counts[p.sender_num] = pkt_counts.get(p.sender_num, 0) + 1
+            sender = p.sender_num
+            is_direct = p.is_direct_rf
+            if is_direct and p.rx_snr is not None:
+                direct_snrs.append(p.rx_snr)
+                if p.rx_rssi is not None:
+                    direct_rssis.append(p.rx_rssi)
+            if not sender:
+                continue
+            pkt_counts[sender] = pkt_counts.get(sender, 0) + 1
+            if p.portnum == PORTNUM_TEXT:
+                msg_counts[sender] = msg_counts.get(sender, 0) + 1
+            if is_direct and p.rx_snr is not None:
+                best = direct_snr.get(sender)
+                if best is None or p.rx_snr > best:
+                    direct_snr[sender] = p.rx_snr
+
+        # Most Packets
         sorted_pkts = sorted(pkt_counts.items(), key=lambda x: x[1],
                              reverse=not self._rank_most_pkts.is_flipped())
         total_pkts = sum(pkt_counts.values()) or 1
@@ -326,13 +348,7 @@ class MonitorPage(QWidget):
         else:
             self._rank_nearby.update_rows([])
 
-        # Strongest / Weakest Direct — best SNR per node from direct RF packets
-        direct_snr: dict[int, float] = {}
-        for p in pkts:
-            if p.sender_num and p.is_direct_rf and p.rx_snr is not None:
-                best = direct_snr.get(p.sender_num)
-                if best is None or p.rx_snr > best:
-                    direct_snr[p.sender_num] = p.rx_snr
+        # Strongest / Weakest Direct — best SNR per node (gathered above)
         sorted_snr = sorted(direct_snr.items(), key=lambda x: x[1],
                             reverse=not self._rank_signal.is_flipped())
         self._rank_signal.update_rows([
@@ -340,11 +356,7 @@ class MonitorPage(QWidget):
             for num, snr in sorted_snr[:_ROW_LIMIT]
         ])
 
-        # Messages Sent — text packet count per node
-        msg_counts: dict[int, int] = {}
-        for p in pkts:
-            if p.sender_num and p.portnum == 1:
-                msg_counts[p.sender_num] = msg_counts.get(p.sender_num, 0) + 1
+        # Messages Sent — text packet count per node (gathered above)
         sorted_msgs = sorted(msg_counts.items(), key=lambda x: x[1],
                              reverse=not self._rank_msgs.is_flipped())
         self._rank_msgs.update_rows([
@@ -372,11 +384,10 @@ class MonitorPage(QWidget):
         self._card_infra.set_value(str(infra))
         self._card_clients.set_value(str(clients))
 
-        # Signal (median SNR from direct packets)
-        direct_pkts = [p for p in pkts if p.is_direct_rf and p.rx_snr is not None]
-        if direct_pkts:
-            snrs = sorted(p.rx_snr for p in direct_pkts)
-            rssis = sorted(p.rx_rssi for p in direct_pkts if p.rx_rssi is not None)
+        # Signal — median of the direct-RF samples gathered in the pass above
+        if direct_snrs:
+            snrs = sorted(direct_snrs)
+            rssis = sorted(direct_rssis)
             med_snr = snrs[len(snrs) // 2]
             med_rssi = rssis[len(rssis) // 2] if rssis else None
             self._card_signal.set_field("SNR", f"{med_snr:.1f} dB")

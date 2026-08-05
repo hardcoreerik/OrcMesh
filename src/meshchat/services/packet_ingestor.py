@@ -12,7 +12,12 @@ from threading import Lock
 from PySide6.QtCore import QObject, Signal
 
 from meshchat.analytics.hop_metrics import compute_hops_used
-from meshchat.analytics.packet_classifier import classify_portnum
+from meshchat.analytics.packet_classifier import (
+    PORTNUM_POSITION,
+    PORTNUM_TELEMETRY,
+    PORTNUM_TEXT,
+    classify_portnum,
+)
 from meshchat.analytics.rolling_rates import DualRateTracker
 from meshchat.models.network_packet import NetworkPacket
 from meshchat.models.network_session import NetworkSession
@@ -104,7 +109,13 @@ class PacketIngestor(QObject):
     normalizes them into NetworkPacket, deduplicates, updates node snapshots,
     and emits typed signals for consumers.
 
-    This object lives on a worker thread.
+    Threading: this object is constructed on, and stays on, the GUI thread —
+    it is never moveToThread'd. The controller's worker emits `raw_packet`
+    from its own thread and Qt queues delivery here. The locks below are
+    therefore defensive rather than load-bearing today; they exist so that
+    moving this to a worker thread later, or handing snapshots to the
+    MonitorStore writer thread, does not silently introduce data races.
+    (An earlier version of this docstring claimed the opposite. It was wrong.)
     """
 
     # Signals emitted to UI/consumers
@@ -147,7 +158,10 @@ class PacketIngestor(QObject):
     def ingest_raw(self, raw: dict) -> None:
         """
         Entry point: normalize, deduplicate, and dispatch a raw packet dict.
-        Must be called from the worker thread (never from a PubSub callback directly).
+
+        Connected to the controller's `raw_packet` signal, so Qt delivers it on
+        this object's thread (the GUI thread). Never call it directly from a
+        PubSub callback — those run on the radio worker thread.
         """
         key = _dedup_key(raw)
         if key and self._is_duplicate(key):
@@ -172,9 +186,9 @@ class PacketIngestor(QObject):
 
         # Sub-type handling
         portnum = pkt.portnum
-        if portnum == 3:   # POSITION_APP
+        if portnum == PORTNUM_POSITION:
             self._handle_position(raw, pkt)
-        elif portnum == 67:  # TELEMETRY_APP
+        elif portnum == PORTNUM_TELEMETRY:
             self._handle_telemetry(raw, pkt)
 
         # Persist
@@ -238,7 +252,7 @@ class PacketIngestor(QObject):
                     pass
 
             text: str | None = None
-            if portnum == 1:  # TEXT_MESSAGE_APP
+            if portnum == PORTNUM_TEXT:
                 text = decoded.get("text")
                 if not isinstance(text, str):
                     pl = decoded.get("payload")
@@ -328,11 +342,11 @@ class PacketIngestor(QObject):
             else:
                 node.rf_count += 1
 
-            if pkt.portnum == 1:
+            if pkt.portnum == PORTNUM_TEXT:
                 node.text_count += 1
-            elif pkt.portnum == 3:
+            elif pkt.portnum == PORTNUM_POSITION:
                 node.position_count += 1
-            elif pkt.portnum == 67:
+            elif pkt.portnum == PORTNUM_TELEMETRY:
                 node.telemetry_count += 1
 
             # Try to update name/role from NodeInfo
@@ -473,12 +487,17 @@ class PacketIngestor(QObject):
     # ------------------------------------------------------------------
 
     def get_nodes(self) -> list[NodeSnapshot]:
+        # Copies, not references. NodeSnapshot is a mutable dataclass that the
+        # ingestion path keeps updating in place, so handing out the live
+        # objects meant callers never actually got a snapshot — the node table
+        # could re-sort by a last_heard that changed after it was read.
         with self._nodes_lock:
-            return list(self._nodes.values())
+            return [_copy_node_snapshot(n) for n in self._nodes.values()]
 
     def get_node(self, node_num: int) -> NodeSnapshot | None:
         with self._nodes_lock:
-            return self._nodes.get(node_num)
+            node = self._nodes.get(node_num)
+            return _copy_node_snapshot(node) if node is not None else None
 
     def get_recent_packets(self) -> list[NetworkPacket]:
         with self._recent_lock:
