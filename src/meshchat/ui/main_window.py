@@ -426,6 +426,11 @@ class MainWindow(QMainWindow):
             self._chat_view.set_no_channels_message()
 
     def _on_message_received(self, msg) -> None:
+        # The controller/worker that constructs inbound messages doesn't know
+        # about NetworkSession — stamp the real session id on before display
+        # and persistence. ChatMessage is frozen, so this is a copy.
+        import dataclasses
+        msg = dataclasses.replace(msg, session_id=self._session.id)
         self._chat_view.add_message(msg)
         self._store.save_message(msg)
 
@@ -489,6 +494,7 @@ class MainWindow(QMainWindow):
             text=text,
             timestamp=datetime.now(timezone.utc),
             status=MessageStatus.SENDING,
+            session_id=self._session.id,
         )
         self._chat_view.add_message(msg)
         self._store.save_message(msg)
@@ -511,6 +517,7 @@ class MainWindow(QMainWindow):
             timestamp=datetime.now(timezone.utc),
             status=MessageStatus.SENDING,
             destination_num=destination_num,
+            session_id=self._session.id,
         )
         self._chat_view.add_message(msg)
         self._store.save_message(msg)
@@ -570,6 +577,7 @@ class MainWindow(QMainWindow):
                     timestamp=datetime.fromisoformat(row["observed_at"]),
                     status=MessageStatus(row["status"]),
                     destination_num=row["destination_num"],
+                    session_id=row["session_id"] or "",
                 ))
             except (ValueError, KeyError, TypeError) as exc:
                 log.debug("Skipping malformed persisted message: %s", exc)

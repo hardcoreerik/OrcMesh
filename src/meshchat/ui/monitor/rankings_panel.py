@@ -23,7 +23,11 @@ class _RankRow(QWidget):
     """One row. Reused across refreshes via set_data() rather than being
     destroyed and recreated — see the note on RankingsPanel.update_rows()."""
 
-    clicked = Signal(int)  # node_num
+    # object, not int: Meshtastic node_num is a 32-bit unsigned value and
+    # can exceed 0x7FFFFFFF — a Qt-typed int signal is C++ int32 and
+    # silently wraps it to negative (see ARCHITECTURE.md / the map-pin
+    # click chain, which had the same bug).
+    clicked = Signal(object)  # node_num
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -73,7 +77,7 @@ class _RankRow(QWidget):
 class RankingsPanel(QWidget):
     """One ranking panel (Last Heard, Most Packets, etc.) with a flippable title."""
 
-    node_selected = Signal(int)   # node_num
+    node_selected = Signal(object)   # node_num — object: see _RankRow.clicked above
 
     def __init__(
         self,

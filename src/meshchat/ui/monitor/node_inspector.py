@@ -67,8 +67,13 @@ class _Section(QWidget):
 class NodeInspector(QWidget):
     """Detailed node inspector panel."""
 
-    show_on_map = Signal(int)           # node_num
-    filter_packet_log = Signal(int)     # node_num
+    # object, not int: Meshtastic node_num is a 32-bit unsigned value and
+    # can exceed 0x7FFFFFFF — a Qt-typed int signal is C++ int32 and
+    # silently wraps it to negative (see ARCHITECTURE.md). Also required
+    # for the direct signal-to-signal connect in NodesPage (mismatched Qt
+    # signal types raise at connect time, not silently).
+    show_on_map = Signal(object)           # node_num
+    filter_packet_log = Signal(object)     # node_num
 
     def __init__(self, parent=None):
         super().__init__(parent)

@@ -65,6 +65,8 @@ class MessageBubble(QWidget):
             sender_row.setContentsMargins(0, 0, 0, 0)
             sender = QLabel(self._msg.sender_name)
             sender.setObjectName("senderLabel" if is_out else "senderLabelIn")
+            # Same rationale as text_lbl below — mesh-controlled string.
+            sender.setTextFormat(Qt.TextFormat.PlainText)
             sender_row.addWidget(sender)
             sender_row.addStretch()
 
@@ -75,10 +77,14 @@ class MessageBubble(QWidget):
             sender_row.addWidget(ts_lbl)
             inner.addLayout(sender_row)
 
-        # Message text (selectable)
+        # Message text (selectable). Explicit PlainText format — this is
+        # untrusted content from the mesh network, and QLabel's default
+        # AutoText heuristic would otherwise interpret HTML-tag-like
+        # content in a received message as actual markup.
         text_lbl = QLabel(self._msg.text)
         text_lbl.setObjectName("msgText")
         text_lbl.setWordWrap(True)
+        text_lbl.setTextFormat(Qt.TextFormat.PlainText)
         text_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         inner.addWidget(text_lbl)
 

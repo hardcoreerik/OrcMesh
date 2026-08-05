@@ -145,6 +145,11 @@ class ChatMessage:
     # Set to the conversation partner's node_num for a direct message
     # (regardless of inbound/outbound direction); None for a channel/broadcast message.
     destination_num: int | None = None
+    # Which app session (connect-to-disconnect run) this message belongs to.
+    # Defaults to "" here since the controller/worker that constructs inbound
+    # messages doesn't know about NetworkSession (that's a MainWindow-level
+    # concept) — MainWindow stamps the real id on before persisting.
+    session_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -286,7 +291,12 @@ class MeshtasticWorker(QObject):
     message_received = Signal(object)                 # ChatMessage
     message_status_changed = Signal(int, object, str) # (packet_id, MessageStatus, detail)
     node_updated = Signal(dict)                       # raw node dict
-    node_action_completed = Signal(int, str, str)     # (node_num, action, human-readable result)
+    # object, not int: Meshtastic node_num is a 32-bit *unsigned* value and
+    # can exceed 0x7FFFFFFF — a Qt-typed int signal/slot is C++ int32 and
+    # silently wraps it to negative (verified across Q_ARG(int, ...) queued
+    # invocation into the worker thread, same failure mode as the map-pin
+    # chain — see ARCHITECTURE.md).
+    node_action_completed = Signal(object, str, str)  # (node_num, action, human-readable result)
     nodedb_synced = Signal(list)                       # list[dict] — full NodeDB right after connect
     ble_scan_started = Signal()
     ble_scan_finished = Signal(list)                  # list[BleDeviceSummary]
@@ -741,7 +751,7 @@ class MeshtasticWorker(QObject):
     # Slot: Send direct message
     # -----------------------------------------------------------------------
 
-    @Slot(str, int)
+    @Slot(str, "qlonglong")
     def send_direct_text(self, text: str, destination_num: int) -> None:
         prepared = self._prepare_outgoing(text)
         if prepared is None:
@@ -761,7 +771,7 @@ class MeshtasticWorker(QObject):
             return False
         return True
 
-    @Slot(int)
+    @Slot("qlonglong")
     def request_position(self, node_num: int) -> None:
         if not self._require_connection("request position"):
             return
@@ -773,7 +783,7 @@ class MeshtasticWorker(QObject):
             self._emit_error(ErrorCode.SEND_FAILED, "Request Failed",
                              f"Could not request position: {exc}", True)
 
-    @Slot(int)
+    @Slot("qlonglong")
     def request_telemetry(self, node_num: int) -> None:
         if not self._require_connection("request telemetry"):
             return
@@ -785,7 +795,7 @@ class MeshtasticWorker(QObject):
             self._emit_error(ErrorCode.SEND_FAILED, "Request Failed",
                              f"Could not request telemetry: {exc}", True)
 
-    @Slot(int, int)
+    @Slot("qlonglong", int)
     def send_traceroute(self, node_num: int, hop_limit: int = 7) -> None:
         # sendTraceRoute blocks waiting for the reply to come back through the
         # mesh, which is why this must stay on the worker thread.
@@ -799,7 +809,7 @@ class MeshtasticWorker(QObject):
             self._emit_error(ErrorCode.SEND_FAILED, "Traceroute Failed",
                              f"Traceroute did not complete: {exc}", True)
 
-    @Slot(int, bool)
+    @Slot("qlonglong", bool)
     def set_favorite(self, node_num: int, favorite: bool) -> None:
         if not self._require_connection("change favorite"):
             return
@@ -816,7 +826,7 @@ class MeshtasticWorker(QObject):
             self._emit_error(ErrorCode.SEND_FAILED, "Action Failed",
                              f"Could not change favorite: {exc}", True)
 
-    @Slot(int)
+    @Slot("qlonglong")
     def remove_node(self, node_num: int) -> None:
         if not self._require_connection("remove node"):
             return
@@ -880,7 +890,7 @@ class MeshtasticController(QObject):
     message_received = Signal(object)
     message_status_changed = Signal(int, object, str)
     node_updated = Signal(dict)
-    node_action_completed = Signal(int, str, str)
+    node_action_completed = Signal(object, str, str)  # object: see MeshtasticWorker's matching signal
     nodedb_synced = Signal(list)
     ble_scan_started = Signal()
     ble_scan_finished = Signal(list)
@@ -955,34 +965,34 @@ class MeshtasticController(QObject):
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
         QMetaObject.invokeMethod(self._worker, "send_direct_text",
                                  Qt.ConnectionType.QueuedConnection,
-                                 Q_ARG(str, text), Q_ARG(int, destination_num))
+                                 Q_ARG(str, text), Q_ARG("qlonglong", destination_num))
 
     def request_position(self, node_num: int) -> None:
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
         QMetaObject.invokeMethod(self._worker, "request_position",
-                                 Qt.ConnectionType.QueuedConnection, Q_ARG(int, node_num))
+                                 Qt.ConnectionType.QueuedConnection, Q_ARG("qlonglong", node_num))
 
     def request_telemetry(self, node_num: int) -> None:
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
         QMetaObject.invokeMethod(self._worker, "request_telemetry",
-                                 Qt.ConnectionType.QueuedConnection, Q_ARG(int, node_num))
+                                 Qt.ConnectionType.QueuedConnection, Q_ARG("qlonglong", node_num))
 
     def send_traceroute(self, node_num: int, hop_limit: int = 7) -> None:
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
         QMetaObject.invokeMethod(self._worker, "send_traceroute",
                                  Qt.ConnectionType.QueuedConnection,
-                                 Q_ARG(int, node_num), Q_ARG(int, hop_limit))
+                                 Q_ARG("qlonglong", node_num), Q_ARG(int, hop_limit))
 
     def set_favorite(self, node_num: int, favorite: bool) -> None:
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
         QMetaObject.invokeMethod(self._worker, "set_favorite",
                                  Qt.ConnectionType.QueuedConnection,
-                                 Q_ARG(int, node_num), Q_ARG(bool, favorite))
+                                 Q_ARG("qlonglong", node_num), Q_ARG(bool, favorite))
 
     def remove_node(self, node_num: int) -> None:
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
         QMetaObject.invokeMethod(self._worker, "remove_node",
-                                 Qt.ConnectionType.QueuedConnection, Q_ARG(int, node_num))
+                                 Qt.ConnectionType.QueuedConnection, Q_ARG("qlonglong", node_num))
 
     def shutdown(self) -> None:
         from PySide6.QtCore import QMetaObject, Qt

@@ -5,6 +5,8 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from meshchat.analytics.hop_metrics import compute_hops_used
+
 log = logging.getLogger(__name__)
 
 
@@ -82,17 +84,12 @@ def parse_text_packet(
             if not sender_id:
                 sender_id = user.get("id")
 
-        # Hop info
+        # Hop info — delegate to the canonical rules in analytics/hop_metrics
+        # rather than duplicating them here, so the two can't silently drift
+        # apart if the rules ever change.
         hop_start = _get(packet, "hopStart", "hop_start")
         hop_limit = _get(packet, "hopLimit", "hop_limit")
-        hops_used: int | None = None
-        if (
-            hop_start is not None
-            and hop_limit is not None
-            and hop_start > 0
-            and hop_limit <= hop_start
-        ):
-            hops_used = hop_start - hop_limit
+        hops_used = compute_hops_used(hop_start, hop_limit)
 
         # Timestamps
         rx_ts = _get(packet, "rxTime", "rx_time")

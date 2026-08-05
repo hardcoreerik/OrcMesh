@@ -126,7 +126,12 @@ class PacketLogModel(QAbstractTableModel):
 class PacketLogView(QWidget):
     """Virtualized live packet log."""
 
-    node_inspect_requested = Signal(int)   # node_num
+    # object, not int: Meshtastic node_num is a 32-bit unsigned value and
+    # can exceed 0x7FFFFFFF — a Qt-typed int signal is C++ int32 and
+    # silently wraps it to negative (see ARCHITECTURE.md). Not currently
+    # connected to anything, but declared correctly so it's safe the
+    # moment it is.
+    node_inspect_requested = Signal(object)   # node_num
 
     def __init__(self, parent=None):
         super().__init__(parent)
