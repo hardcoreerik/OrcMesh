@@ -266,12 +266,17 @@ class MonitorPage(QWidget):
     def clear_map(self) -> None:
         self._map_widget.clear_nodes()
         self._map_has_nodes = False
+        self._set_selected_node(None)
 
     def focus_node_on_map(self, node_num: int) -> None:
         if node_num in self._positions:
             self._map_widget.focus_node(node_num)
         else:
             log.info("No known position for node %s — cannot focus map", node_num)
+        # "Show on map" is a selection too — without this, the highlight
+        # ring/ranking-row highlight would stay on whatever was selected
+        # before, disagreeing with what the inspector now shows.
+        self._on_ranking_node_selected(node_num)
 
     # ------------------------------------------------------------------
     # Private

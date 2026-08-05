@@ -210,6 +210,7 @@ function updateNode(data) {
 function clearNodes() {
   clusterGroup.clearLayers();
   nodes = {};
+  selectedNodeNum = null;  // otherwise orphaned until the next updateNode()
   updateNodeCount();
 }
 
