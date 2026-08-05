@@ -293,10 +293,12 @@ class MeshtasticWorker(QObject):
     message_received = Signal(object)                 # ChatMessage
     # object, not int, for packet_id: Meshtastic packet IDs are random
     # 32-bit *unsigned* values that can exceed 0x7FFFFFFF — same truncation
-    # bug as node_num (see ARCHITECTURE.md). A truncated id here can never
-    # match chat_view.py's untruncated ChatMessage.packet_id, leaving a
-    # message stuck showing "Sending…" even after the radio accepted it.
-    message_status_changed = Signal(object, object, str) # (packet_id, MessageStatus, detail)
+    # bug as node_num (see ARCHITECTURE.md). local_id (client-generated,
+    # always known — unlike packet_id, which is only known once the radio
+    # accepts the send) is what chat_view.py actually matches on, so a
+    # status update — including a send failure, which never gets a
+    # packet_id at all — can always find the right bubble.
+    message_status_changed = Signal(str, object, object, str) # (local_id, packet_id, MessageStatus, detail)
     node_updated = Signal(dict)                       # raw node dict
     # object, not int: Meshtastic node_num is a 32-bit *unsigned* value and
     # can exceed 0x7FFFFFFF — a Qt-typed int signal/slot is C++ int32 and
@@ -731,39 +733,54 @@ class MeshtasticWorker(QObject):
             return None
         return text
 
-    def _dispatch_text(self, text: str, **send_kwargs) -> None:
-        """Hand a validated message to the radio and report the outcome."""
+    def _dispatch_text(self, text: str, local_id: str, **send_kwargs) -> None:
+        """Hand a validated message to the radio and report the outcome.
+
+        local_id identifies which outbound ChatMessage this is — it's
+        generated client-side at bubble-creation time, so (unlike
+        packet_id, only known once the radio accepts the send) it's always
+        available to correlate this event back to the right bubble,
+        including a failure, and regardless of whether that bubble's
+        channel/DM is the one currently shown.
+        """
         try:
             packet = self._interface.sendText(text=text, wantAck=True, **send_kwargs)
             self.message_status_changed.emit(
+                local_id,
                 getattr(packet, "id", None) or 0,
                 MessageStatus.ACCEPTED_BY_RADIO,
                 "Accepted by radio",
             )
         except Exception as exc:
             log.exception("Send failed")
+            self.message_status_changed.emit(local_id, None, MessageStatus.FAILED, str(exc))
             self._emit_error(
                 ErrorCode.SEND_FAILED, "Send Failed",
                 f"Could not send message: {exc}", True,
             )
 
-    @Slot(str, int)
-    def send_channel_text(self, text: str, channel_index: int) -> None:
+    @Slot(str, int, str)
+    def send_channel_text(self, text: str, channel_index: int, local_id: str) -> None:
         prepared = self._prepare_outgoing(text)
         if prepared is None:
+            # A bubble already exists for this send (created before the
+            # queued call reached this thread) — without this, it would be
+            # orphaned showing "Sending…" forever.
+            self.message_status_changed.emit(local_id, None, MessageStatus.FAILED, "Message not sent")
             return
-        self._dispatch_text(prepared, destinationId="^all", channelIndex=channel_index)
+        self._dispatch_text(prepared, local_id, destinationId="^all", channelIndex=channel_index)
 
     # -----------------------------------------------------------------------
     # Slot: Send direct message
     # -----------------------------------------------------------------------
 
-    @Slot(str, "qlonglong")
-    def send_direct_text(self, text: str, destination_num: int) -> None:
+    @Slot(str, "qlonglong", str)
+    def send_direct_text(self, text: str, destination_num: int, local_id: str) -> None:
         prepared = self._prepare_outgoing(text)
         if prepared is None:
+            self.message_status_changed.emit(local_id, None, MessageStatus.FAILED, "Message not sent")
             return
-        self._dispatch_text(prepared, destinationId=destination_num)
+        self._dispatch_text(prepared, local_id, destinationId=destination_num)
 
     # -----------------------------------------------------------------------
     # Slots: per-node actions (right-click menu on the Nodes page)
@@ -895,7 +912,7 @@ class MeshtasticController(QObject):
     channels_updated = Signal(list)
     lora_config_updated = Signal(object)
     message_received = Signal(object)
-    message_status_changed = Signal(object, object, str)  # object: see MeshtasticWorker's matching signal
+    message_status_changed = Signal(str, object, object, str)  # see MeshtasticWorker's matching signal
     node_updated = Signal(dict)
     node_action_completed = Signal(object, str, str)  # object: see MeshtasticWorker's matching signal
     nodedb_synced = Signal(list)
@@ -962,17 +979,17 @@ class MeshtasticController(QObject):
         from PySide6.QtCore import QMetaObject, Qt
         QMetaObject.invokeMethod(self._worker, "disconnect", Qt.ConnectionType.QueuedConnection)
 
-    def send_channel_text(self, text: str, channel_index: int) -> None:
+    def send_channel_text(self, text: str, channel_index: int, local_id: str) -> None:
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
         QMetaObject.invokeMethod(self._worker, "send_channel_text",
                                  Qt.ConnectionType.QueuedConnection,
-                                 Q_ARG(str, text), Q_ARG(int, channel_index))
+                                 Q_ARG(str, text), Q_ARG(int, channel_index), Q_ARG(str, local_id))
 
-    def send_direct_text(self, text: str, destination_num: int) -> None:
+    def send_direct_text(self, text: str, destination_num: int, local_id: str) -> None:
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
         QMetaObject.invokeMethod(self._worker, "send_direct_text",
                                  Qt.ConnectionType.QueuedConnection,
-                                 Q_ARG(str, text), Q_ARG("qlonglong", destination_num))
+                                 Q_ARG(str, text), Q_ARG("qlonglong", destination_num), Q_ARG(str, local_id))
 
     def request_position(self, node_num: int) -> None:
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG

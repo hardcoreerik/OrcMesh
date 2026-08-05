@@ -214,49 +214,34 @@ class ChatView(QWidget):
         if self._current_key is not None:
             self._rebuild_bubbles()
 
-    def update_message_status(self, packet_id: int, status: MessageStatus) -> None:
-        """Update delivery status on an outbound message bubble."""
-        for bubble in self._bubbles.values():
-            if bubble._msg.packet_id == packet_id:
-                self._apply_status(bubble, status)
-                return
+    def update_message_status(self, local_id: str, packet_id: int | None, status: MessageStatus) -> None:
+        """Update delivery status on an outbound message.
 
-        # Outbound bubbles are created with packet_id=None — the radio only
-        # assigns a real id once it accepts the send, which happens a
-        # moment after the bubble already exists on screen, so the exact
-        # match above can never succeed for a message's first status
-        # update. Fall back to the oldest bubble still showing "Sending…"
-        # with no packet_id yet, and record the now-known id on it (in
-        # both the live bubble and the underlying stored message, so a
-        # channel/DM switch that rebuilds bubbles from _messages_by_key
-        # doesn't lose it) — a later status update can then match it
-        # directly via the exact match above.
-        for bubble in self._bubbles.values():
-            if bubble._msg.packet_id is None and bubble._msg.status == MessageStatus.SENDING:
-                self._apply_status(bubble, status, packet_id=packet_id)
-                return
-
-    def _apply_status(self, bubble: MessageBubble, status: MessageStatus, packet_id: int | None = None) -> None:
-        # ChatMessage is frozen, and bubble.update_status() below only ever
-        # updated the visual label — the underlying object's own .status
-        # field was never kept in sync (true even before this fix, on the
-        # exact-match path above), so persisted/reloaded history and
-        # anything else reading bubble._msg.status directly always saw the
-        # original send-time value. Replace the object so both stay true.
-        if packet_id is not None:
-            updated = dataclasses.replace(bubble._msg, status=status, packet_id=packet_id)
-        else:
-            updated = dataclasses.replace(bubble._msg, status=status)
-        self._replace_stored_message(bubble._msg, updated)
-        bubble._msg = updated
-        bubble.update_status(status)
-
-    def _replace_stored_message(self, old: ChatMessage, new: ChatMessage) -> None:
+        Matched by local_id — generated client-side at bubble creation and
+        threaded through the whole send path, so (unlike packet_id, only
+        known once the radio accepts the send, or never for a failed send)
+        it always identifies the right message exactly. Searches
+        _messages_by_key rather than just the currently-visible _bubbles,
+        so a status update for a message on a different channel/DM than
+        the one currently shown still lands correctly.
+        """
         for msgs in self._messages_by_key.values():
             for i, m in enumerate(msgs):
-                if m is old:
-                    msgs[i] = new
-                    return
+                if m.local_id != local_id:
+                    continue
+                # ChatMessage is frozen, and bubble.update_status() only
+                # ever updated the visual label — the underlying object's
+                # own .status field was never kept in sync, so persisted/
+                # reloaded history and anything else reading it directly
+                # always saw the original send-time value.
+                new_packet_id = packet_id if packet_id is not None else m.packet_id
+                updated = dataclasses.replace(m, status=status, packet_id=new_packet_id)
+                msgs[i] = updated
+                bubble = self._bubbles.get(local_id)
+                if bubble is not None:
+                    bubble._msg = updated
+                    bubble.update_status(status)
+                return
 
     def set_send_enabled(self, enabled: bool) -> None:
         self._composer.set_enabled_for_send(enabled)
