@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meshchat-windows"
-version = "0.1.0"
+version = "0.1.1"
 description = "Native Windows desktop client and network monitor for Meshtastic mesh radio networks"
 requires-python = ">=3.12"
 license = "GPL-3.0-only"

@@ -39,6 +39,11 @@ below — they're cited here for provenance, not as a dependency.
 - Optional RTL-SDR spectrum waterfall, with Meshtastic + MeshCore-aware
   frequency-band markers (`analytics/lora_bands.py`)
 - v0.1.0-alpha public release
+- v0.1.1-alpha release — the `VERSION` `ImportError` crash fix (Help →
+  About, diagnostic copy, session export) had been on `main` since PR #2
+  but never made it into a downloadable build until this one; also the
+  first release with a proper Windows installer (`MeshChat-Setup-*.exe`,
+  Inno Setup) instead of a raw `dist/` folder
 
 ## In progress
 
@@ -46,11 +51,7 @@ Nothing currently in flight.
 
 ## Near-term
 
-- **v0.1.1-alpha release.** The `VERSION` `ImportError` crash fix (Help →
-  About, diagnostic copy, session export) has been on `main` since PR #2,
-  but the binary attached to the published `v0.1.0-alpha` GitHub release
-  still crashes on those paths. Needs a new tagged release with the fix
-  actually in the downloadable build.
+Nothing currently planned.
 
 ## Remaining phase-two items (from the original build spec, §27)
 
@@ -64,7 +65,10 @@ Not yet built, in no particular priority order:
 - Channel configuration (from the app)
 - QR/channel URL import (needs explicit security warnings per the spec —
   channel URLs embed the PSK)
-- Signed Windows installer
+- Windows installer is unsigned (`packaging/installer.iss`, Inno Setup) —
+  Windows SmartScreen shows an "unrecognized publisher" warning until it
+  builds up download reputation. Actual code signing needs a paid
+  certificate; not started.
 - Automatic update checking
 
 ## Deferred (scoped, not started)
