@@ -41,6 +41,8 @@ where = ["src"]
 # Include the Leaflet web assets in the installed package
 [tool.setuptools.package-data]
 "meshchat.ui.map" = ["web/**/*"]
+# PEP 561 marker so type checkers use the inline annotations
+"meshchat" = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
