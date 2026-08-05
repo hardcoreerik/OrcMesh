@@ -85,11 +85,22 @@ git fetch origin "$BASE_REF" "$HEAD_REF" >/dev/null 2>&1 || true
 
 # ── One-time shared base session: orient Grok on the codebase once, so every
 #    branch's forked session starts warm instead of cold. ─────────────────
+# Core project docs to ground every review against — in-repo docs plus the
+# original spec/design documents that live one level up, outside git (they
+# predate/motivated this repo and aren't meant to be committed into it).
+DOC_PATHS="$REPO_ROOT/README.md $REPO_ROOT/ARCHITECTURE.md $REPO_ROOT/ROADMAP.md"
+for f in "$REPO_ROOT"/docs/*.md; do
+  [ -f "$f" ] && DOC_PATHS="$DOC_PATHS $f"
+done
+for f in "$REPO_ROOT"/../*.md; do
+  [ -f "$f" ] && DOC_PATHS="$DOC_PATHS $f"
+done
+
 if [ ! -f "$BASE_SESSION_FILE" ]; then
   BASE_ID="$(new_uuid)"
   echo "First-ever run for $PROJECT_NAME — setting up a shared base review session..." >&2
   if "$GROK" --session-id "$BASE_ID" --always-approve --no-alt-screen --output-format plain \
-      -p "Orientation only, no review needed yet. Skim this repo's structure and its most-changed/most-central source files to build general context you'll reuse across future PR reviews in this session tree. Summarize the architecture in a few bullet points." \
+      -p "Orientation only, no review needed yet. Read these core project documents to understand the intended architecture, roadmap, and phasing before you look at any code: $DOC_PATHS — then skim this repo's structure and its most-changed/most-central source files to build general context you'll reuse across future PR reviews in this session tree. Summarize the architecture and current roadmap status in a few bullet points." \
       >/dev/null 2>&1
   then
     echo "$BASE_ID" > "$BASE_SESSION_FILE"
@@ -140,6 +151,12 @@ to: signal/slot or event-wiring correctness, thread-safety/lifecycle issues,
 XSS/escaping on any string reaching HTML/innerHTML, and regressions vs the
 base branch (say explicitly whether each finding is a regression from this
 diff or pre-existing).
+
+Also check this diff against the project's core documents you read during
+orientation (ARCHITECTURE.md, ROADMAP.md, README.md, and the original spec
+docs) — flag anything that contradicts documented architecture/conventions,
+duplicates an already-deferred/out-of-scope item, or completes/changes
+something ARCHITECTURE.md or ROADMAP.md should be updated to reflect.
 
 Output format: a short list of concrete findings, each with file:line,
 severity (BLOCKER/MINOR/NIT), and a one-line fix suggestion. If genuinely
