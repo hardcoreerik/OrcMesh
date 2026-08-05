@@ -69,6 +69,9 @@ class MapBridge(QObject):
     def focus_node(self, node_num: int) -> None:
         self._run(f"focusNode({int(node_num)})")
 
+    def refresh_size(self, refit: bool = True) -> None:
+        self._run(f"refreshSize({'true' if refit else 'false'})")
+
     def set_theme(self, theme: str) -> None:
         self._run(f"setMapTheme({json.dumps(theme)})")
 

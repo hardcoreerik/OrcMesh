@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QUrl, Signal
+from PySide6.QtCore import QSettings, QTimer, QUrl, Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 log = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ class MapWidget(QWidget):
         # default to None here first so _build_placeholder()'s no-webengine
         # path still has a defined self._bridge to guard against.
         self._bridge = None
+        self._did_initial_show = False
 
         if _map_available():
             self._build_webengine(layout)
@@ -125,6 +126,15 @@ class MapWidget(QWidget):
     def focus_node(self, node_num: int) -> None:
         if self._bridge:
             self._bridge.focus_node(node_num)
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().showEvent(event)
+        # The map tab is hidden at startup, so Leaflet's cached container size
+        # is stale (zero) until it's first shown. Re-measure and re-frame once
+        # it becomes visible, otherwise the initial auto-fit is meaningless.
+        if self._bridge and not self._did_initial_show:
+            self._did_initial_show = True
+            QTimer.singleShot(200, lambda: self._bridge.refresh_size(True))
 
     # ------------------------------------------------------------------
     # Theme (light/dark basemap)

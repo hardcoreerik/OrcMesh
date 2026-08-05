@@ -150,6 +150,12 @@ function clearNodes() {
   updateNodeCount();
 }
 
+function median(values) {
+  var sorted = values.slice().sort(function(a, b) { return a - b; });
+  var mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 function fitAll() {
   var latlngs = Object.values(nodes).map(function(n) {
     return n.marker.getLatLng();
@@ -158,9 +164,43 @@ function fitAll() {
   if (latlngs.length === 0) return;
   if (latlngs.length === 1) {
     map.setView(latlngs[0], 13);
-  } else {
-    map.fitBounds(L.latLngBounds(latlngs).pad(0.1));
+    return;
   }
+
+  // Frame the bulk of the mesh, not the extremes. A single node reporting a
+  // bogus position (sign-flipped longitude is a common GPS/config fault) or a
+  // distant MQTT-bridged node would otherwise force a zoomed-out world view
+  // that shows nothing useful. All markers stay on the map — this only
+  // decides the initial framing.
+  var lats = latlngs.map(function(p) { return p.lat; });
+  var lons = latlngs.map(function(p) { return p.lng; });
+  var medLat = median(lats), medLon = median(lons);
+
+  var withDist = latlngs.map(function(p) {
+    var dLat = p.lat - medLat, dLon = p.lng - medLon;
+    return { p: p, d: Math.sqrt(dLat * dLat + dLon * dLon) };
+  });
+  var dists = withDist.map(function(x) { return x.d; })
+                      .sort(function(a, b) { return a - b; });
+  // Keep everything within the 90th percentile of distance-from-median
+  var cutoff = dists[Math.floor(dists.length * 0.9)];
+  var core = withDist.filter(function(x) { return x.d <= cutoff; })
+                     .map(function(x) { return x.p; });
+
+  var excluded = latlngs.length - core.length;
+  if (excluded > 0) {
+    console.log("fitAll: framing " + core.length + " node(s); " + excluded +
+                " outlier(s) left off-view (still on the map)");
+  }
+  map.fitBounds(L.latLngBounds(core.length >= 2 ? core : latlngs).pad(0.1));
+}
+
+function refreshSize(refit) {
+  // Leaflet caches the container size. The map lives on a tab that is hidden
+  // at startup, so any fitBounds computed while hidden is against a zero-size
+  // container and produces a nonsense view. Re-measure once the tab is shown.
+  map.invalidateSize();
+  if (refit) fitAll();
 }
 
 function focusNode(nodeNum) {
