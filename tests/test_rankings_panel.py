@@ -132,3 +132,4 @@ class TestClickRacingLiveRefresh:
         panel.hide()
 
         assert not errors, f"click raised during concurrent refresh: {errors}"
+        assert received == [1]
