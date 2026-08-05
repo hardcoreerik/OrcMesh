@@ -73,7 +73,8 @@ Produces `dist\MeshChat\MeshChat.exe`.
 
 ## Licensing
 
-MeshChat interfaces with the official Meshtastic Python package, which is
-licensed **GPL-3.0-only**. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
-Anyone distributing builds of this application should confirm their obligations
-under that license.
+MeshChat for Windows is licensed **GPL-3.0-only** — see [LICENSE](LICENSE).
+
+It is licensed this way because it links the official Meshtastic Python
+package, which is GPL-3.0-only copyleft. Full dependency licensing is listed in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

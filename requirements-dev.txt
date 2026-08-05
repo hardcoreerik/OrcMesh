@@ -1,0 +1,11 @@
+# MeshChat for Windows — development dependencies
+# Mirrors [project.optional-dependencies].dev in pyproject.toml.
+# Preferred install is `pip install -e ".[dev]"` (or .\scripts\bootstrap.ps1).
+
+-r requirements.txt
+
+pytest>=8,<10
+pytest-timeout>=2,<3
+ruff>=0.4
+mypy>=1.10
+pyinstaller>=6,<7
