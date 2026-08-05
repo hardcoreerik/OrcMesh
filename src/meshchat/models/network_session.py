@@ -40,6 +40,22 @@ class NetworkSession:
     def end(self) -> None:
         self.ended_at = datetime.now(timezone.utc)
 
+    def start_new(self) -> None:
+        """Reinitialize in place for a fresh connect-to-disconnect run.
+
+        Mutates rather than replacing the object: PacketIngestor holds this
+        same NetworkSession instance and mutates it directly (packet_count
+        += 1, session_id stamped on packets/messages) — replacing the
+        reference here wouldn't be visible there without also threading a
+        setter through. Reconnecting without this call previously meant
+        every connect-to-disconnect run in one app session shared the same
+        session_id, since __init__ only creates the session once.
+        """
+        self.id = str(uuid.uuid4())
+        self.started_at = datetime.now(timezone.utc)
+        self.ended_at = None
+        self.packet_count = 0
+
     @classmethod
     def new(cls, transport: str = "unknown", connection_target: str = "") -> "NetworkSession":
         return cls(transport=transport, connection_target=connection_target)

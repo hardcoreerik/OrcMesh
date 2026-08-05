@@ -387,6 +387,11 @@ class MainWindow(QMainWindow):
             self._chat_view.set_send_enabled(False)
 
     def _on_connected(self, summary) -> None:
+        # A fresh connect-to-disconnect run gets its own session id — without
+        # this, reconnecting in the same app session would keep stamping
+        # messages/packets with the FIRST connection's session_id forever
+        # (self._session is only ever constructed once, in __init__).
+        self._session.start_new()
         name = summary.long_name or summary.short_name or summary.node_id or "Radio"
         self._conn_bar.set_device_name(name)
         self._monitor_page.set_connection_state(ConnectionState.CONNECTED, name)
@@ -396,6 +401,7 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(f"Connected to {name}")
 
     def _on_disconnected(self, reason: str) -> None:
+        self._session.end()
         self._conn_bar.set_device_name("")
         self._channel_list.clear_channels()
         self._channel_list.set_local_node(None)
