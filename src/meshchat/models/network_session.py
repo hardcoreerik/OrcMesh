@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 
 @dataclass
 class NetworkSession:
-    """Represents one monitoring session.
+    """Represents one monitoring session — one per app run.
 
-    A session starts when the app connects (or the user presses Start New
-    Session) and ends only on: an explicit End Session action, the app
+    Created once at app startup (or when the user presses Start New
+    Session) and lasts until: an explicit End Session action, the app
     exiting cleanly, a database reset, or an optional long-disconnect
-    policy — see the network-monitor spec (F:\\Ai\\MeshMonitor\\
-    CLAUDE_MESHCHAT_NETWORK_MONITOR_ADDENDUM.md, "session lifecycle").
+    policy — see CLAUDE_MESHCHAT_NETWORK_MONITOR_ADDENDUM.md's session-
+    lifecycle section (kept outside this repo; see ROADMAP.md for why).
     A simple transport reconnect must NOT reset it — do not call `.end()`
     or otherwise rotate `.id` from a disconnect/reconnect handler.
     """

@@ -145,10 +145,12 @@ class ChatMessage:
     # Set to the conversation partner's node_num for a direct message
     # (regardless of inbound/outbound direction); None for a channel/broadcast message.
     destination_num: int | None = None
-    # Which app session (connect-to-disconnect run) this message belongs to.
-    # Defaults to "" here since the controller/worker that constructs inbound
-    # messages doesn't know about NetworkSession (that's a MainWindow-level
-    # concept) — MainWindow stamps the real id on before persisting.
+    # Which app run (NetworkSession) this message belongs to — one id for
+    # the whole app lifetime, constant across reconnects (see
+    # ARCHITECTURE.md). Defaults to "" here since the controller/worker
+    # that constructs inbound messages doesn't know about NetworkSession
+    # (that's a MainWindow-level concept) — MainWindow stamps the real id
+    # on before persisting.
     session_id: str = ""
 
 
