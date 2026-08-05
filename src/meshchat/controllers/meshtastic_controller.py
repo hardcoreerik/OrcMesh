@@ -58,6 +58,18 @@ BROADCAST_NUM = 0xFFFFFFFF
 MAX_MESSAGE_BYTES = 200
 
 
+def normalize_outgoing_text(text: str) -> str:
+    """Canonical form of a message, as it will actually be transmitted.
+
+    Must be applied before *counting* bytes as well as before sending, or the
+    composer measures something different from what the radio receives. It
+    previously counted raw editor text while the send path normalised first,
+    so 199 characters followed by a CRLF measured 201 bytes and the Send
+    button greyed out on a message that was in fact 199 bytes and valid.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 class MessageDirection(Enum):
     INBOUND = "inbound"
     OUTBOUND = "outbound"
@@ -686,7 +698,7 @@ class MeshtasticWorker(QObject):
             )
             return None
 
-        text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        text = normalize_outgoing_text(text)
         if not text:
             return None  # empty input is a no-op, not an error worth surfacing
 

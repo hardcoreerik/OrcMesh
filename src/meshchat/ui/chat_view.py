@@ -18,6 +18,7 @@ from meshchat.controllers.meshtastic_controller import (
     MAX_MESSAGE_BYTES,
     ChatMessage,
     MessageStatus,
+    normalize_outgoing_text,
 )
 from meshchat.ui.widgets.message_bubble import MessageBubble
 
@@ -78,7 +79,10 @@ class ComposerWidget(QWidget):
         return super().eventFilter(obj, event)
 
     def _on_text_changed(self) -> None:
-        text = self._input.toPlainText()
+        # Count the normalised form — the same string the radio will receive.
+        # Counting raw editor text made a trailing CRLF read as 2 extra bytes
+        # and greyed out Send on messages that were actually within the limit.
+        text = normalize_outgoing_text(self._input.toPlainText())
         byte_len = len(text.encode("utf-8"))
         lbl = f"{byte_len} / {_BYTE_LIMIT} bytes"
         if byte_len > _BYTE_LIMIT:
@@ -92,11 +96,11 @@ class ComposerWidget(QWidget):
             self._byte_label.setText(lbl)
         self._byte_label.style().unpolish(self._byte_label)
         self._byte_label.style().polish(self._byte_label)
-        has_text = bool(text.strip()) and byte_len <= _BYTE_LIMIT
+        has_text = bool(text) and byte_len <= _BYTE_LIMIT
         self._send_btn.setEnabled(has_text and self.isEnabled())
 
     def _do_send(self) -> None:
-        text = self._input.toPlainText().strip()
+        text = normalize_outgoing_text(self._input.toPlainText())
         if not text:
             return
         byte_len = len(text.encode("utf-8"))

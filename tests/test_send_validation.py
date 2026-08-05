@@ -167,3 +167,40 @@ class TestSendFailure:
         w.message_status_changed.connect(lambda pid, st, detail: statuses.append((pid, st)))
         w.send_channel_text("hi", 0)
         assert statuses and statuses[0][0] == 4242
+
+
+class TestNormalizationIsShared:
+    """The composer's byte counter and the send path must measure the same
+    string, or Send greys out on messages that are actually valid."""
+
+    def test_trailing_crlf_does_not_inflate_the_count(self):
+        from meshchat.controllers.meshtastic_controller import normalize_outgoing_text
+
+        raw = "a" * (MAX_MESSAGE_BYTES - 1) + "\r\n"
+        assert len(raw.encode("utf-8")) > MAX_MESSAGE_BYTES, "precondition"
+        # After normalisation it is within the limit, so the composer must
+        # count it as sendable rather than blocking it.
+        assert len(normalize_outgoing_text(raw).encode("utf-8")) <= MAX_MESSAGE_BYTES
+
+    def test_that_message_actually_sends(self):
+        w = _connected_worker()
+        w.send_channel_text("a" * (MAX_MESSAGE_BYTES - 1) + "\r\n", 0)
+        assert len(w._interface.sent) == 1
+        assert w._interface.sent[0]["text"] == "a" * (MAX_MESSAGE_BYTES - 1)
+
+    def test_normalizer_is_idempotent(self):
+        from meshchat.controllers.meshtastic_controller import normalize_outgoing_text
+
+        once = normalize_outgoing_text("  a\r\nb\r  ")
+        assert normalize_outgoing_text(once) == once
+
+    def test_composer_and_controller_agree_on_length(self):
+        # Property-ish check across shapes that previously disagreed.
+        from meshchat.controllers.meshtastic_controller import normalize_outgoing_text
+
+        for raw in ("hi\r\n", "  hi  ", "a\rb", "\r\n\r\n", "x" * 50 + "\r\n"):
+            composer_len = len(normalize_outgoing_text(raw).encode("utf-8"))
+            w = _connected_worker()
+            w.send_channel_text(raw, 0)
+            sent = w._interface.sent[0]["text"] if w._interface.sent else ""
+            assert composer_len == len(sent.encode("utf-8")), f"disagreed on {raw!r}"
