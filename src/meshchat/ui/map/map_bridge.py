@@ -74,6 +74,10 @@ class MapBridge(QObject):
     def focus_node(self, node_num: int) -> None:
         self._run(f"focusNode({int(node_num)})")
 
+    def set_selected_node(self, node_num: int | None) -> None:
+        arg = "null" if node_num is None else str(int(node_num))
+        self._run(f"setSelectedNode({arg})")
+
     def refresh_size(self, refit: bool = True) -> None:
         self._run(f"refreshSize({'true' if refit else 'false'})")
 

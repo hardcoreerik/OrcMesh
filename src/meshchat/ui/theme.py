@@ -318,6 +318,12 @@ QPushButton#dangerBtn:hover {{
 #rankItem:hover {{
     background-color: {BG_HOVER};
 }}
+#rankItem[selected="true"] {{
+    background-color: rgba(0, 212, 255, 0.14);
+    border-left: 3px solid {ACCENT_CYAN};
+    border-bottom: 1px solid rgba(26, 36, 72, 0.5);
+    padding-left: 5px;
+}}
 
 /* ── Packet log ─────────────────────────────────────────────── */
 #packetLog {{

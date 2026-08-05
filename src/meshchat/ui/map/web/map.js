@@ -3,6 +3,7 @@
 
 var map, clusterGroup, bridge;
 var nodes = {};          // node_num → { marker, data }
+var selectedNodeNum = null;  // node_num currently highlighted, or null
 
 // ── Map setup ──────────────────────────────────────────────────────────────
 map = L.map("map", {
@@ -119,12 +120,27 @@ function markerIcon(data) {
     cssClass = "mesh-marker-stale";
     size = 24;
   }
+  if (data.node_num === selectedNodeNum) {
+    cssClass += " mesh-marker-selected";
+    size += 6;
+  }
   return L.divIcon({
     className: cssClass,
     html: "<span>" + escapeHtml(badgeLabel(data)) + "</span>",
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
     popupAnchor: [0, -(size / 2 + 2)],
+  });
+}
+
+function setSelectedNode(nodeNum) {
+  var previous = selectedNodeNum;
+  selectedNodeNum = nodeNum;
+  // Only the previously- and newly-selected markers' appearance can have
+  // changed — no need to touch every marker on the map.
+  [previous, nodeNum].forEach(function(num) {
+    var entry = nodes[num];
+    if (entry) entry.marker.setIcon(markerIcon(entry.data));
   });
 }
 
@@ -194,6 +210,7 @@ function updateNode(data) {
 function clearNodes() {
   clusterGroup.clearLayers();
   nodes = {};
+  selectedNodeNum = null;  // otherwise orphaned until the next updateNode()
   updateNodeCount();
 }
 

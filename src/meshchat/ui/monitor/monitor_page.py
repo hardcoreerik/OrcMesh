@@ -135,13 +135,14 @@ class MonitorPage(QWidget):
         self._rank_signal     = RankingsPanel("STRONGEST DIRECT", "WEAKEST DIRECT")
         self._rank_msgs       = RankingsPanel("MESSAGES SENT", "FEWEST MESSAGES")
 
-        for panel in [
+        self._rank_panels = [
             self._rank_last_heard,
             self._rank_most_pkts,
             self._rank_nearby,
             self._rank_signal,
             self._rank_msgs,
-        ]:
+        ]
+        for panel in self._rank_panels:
             panel.node_selected.connect(self._on_ranking_node_selected)
             mid_layout.addWidget(panel, 1)
 
@@ -158,16 +159,16 @@ class MonitorPage(QWidget):
         right_layout.setContentsMargins(4, 4, 4, 4)
         right_layout.setSpacing(6)
 
+        self._inspector = NodeInspector()
+        self._inspector.setMinimumHeight(300)
+        self._inspector.show_on_map.connect(self.focus_node_on_map)
+        right_layout.addWidget(self._inspector)
+
         self._hop_panels = HopPanels()
         right_layout.addWidget(self._hop_panels)
 
         self._dist_panel = DistributionPanel()
         right_layout.addWidget(self._dist_panel)
-
-        self._inspector = NodeInspector()
-        self._inspector.setMinimumHeight(300)
-        self._inspector.show_on_map.connect(self.focus_node_on_map)
-        right_layout.addWidget(self._inspector)
 
         right_layout.addStretch()
         right_scroll.setWidget(right_col)
@@ -187,6 +188,7 @@ class MonitorPage(QWidget):
         self._map_has_nodes = False
         self._positions: dict[int, tuple[float, float]] = {}  # node_num -> (lat, lon)
         self._channel_names: dict[int, str] = {}
+        self._selected_node_num: int | None = None
 
         # 2-second refresh for rankings
         self._rank_timer = QTimer(self)
@@ -264,12 +266,17 @@ class MonitorPage(QWidget):
     def clear_map(self) -> None:
         self._map_widget.clear_nodes()
         self._map_has_nodes = False
+        self._set_selected_node(None)
 
     def focus_node_on_map(self, node_num: int) -> None:
         if node_num in self._positions:
             self._map_widget.focus_node(node_num)
         else:
             log.info("No known position for node %s — cannot focus map", node_num)
+        # "Show on map" is a selection too — without this, the highlight
+        # ring/ranking-row highlight would stay on whatever was selected
+        # before, disagreeing with what the inspector now shows.
+        self._on_ranking_node_selected(node_num)
 
     # ------------------------------------------------------------------
     # Private
@@ -437,7 +444,17 @@ class MonitorPage(QWidget):
         node = self._nodes.get(node_num)
         if node:
             self._inspector.show_node(node)
+        self._set_selected_node(node_num)
         self.node_selected.emit(node_num)
+
+    def _set_selected_node(self, node_num: int | None) -> None:
+        """Highlight node_num everywhere it can appear on this page — the
+        map pin, and whichever ranking panel row currently represents it —
+        so a click anywhere always shows which node is now selected."""
+        self._selected_node_num = node_num
+        self._map_widget.set_selected_node(node_num)
+        for panel in self._rank_panels:
+            panel.set_selected_node(node_num)
 
     def _node_name(self, num: int) -> str:
         n = self._nodes.get(num)
