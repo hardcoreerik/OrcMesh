@@ -42,6 +42,13 @@ class NodesPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        # Remembers the last node selected (by a table click or select_node()),
+        # so it can be restored after update_nodes() — QAbstractItemModel's
+        # begin/endResetModel() (called on every refresh) clears the table's
+        # current index, which would otherwise silently drop the selection a
+        # few seconds later on any live, frequently-updating mesh.
+        self._selected_node_num: int | None = None
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -120,10 +127,21 @@ class NodesPage(QWidget):
     def update_nodes(self, nodes: dict[int, NodeSnapshot]) -> None:
         self._model.update_nodes(nodes)
         self._count_lbl.setText(f"{self._proxy.rowCount()} node(s)")
+        # beginResetModel()/endResetModel() (inside update_nodes() above)
+        # clears the table's current index — reapply the remembered
+        # selection so it survives the refresh instead of silently
+        # disappearing a few seconds after every pin/row click.
+        if self._selected_node_num is not None:
+            self._select_row(self._selected_node_num, scroll=False)
 
     def select_node(self, node_num: int) -> None:
         """Select and scroll to a node's row, e.g. after a click elsewhere
-        (map pin, ranking panel) asks this page to follow along."""
+        (map pin, ranking panel) asks this page to follow along. Remembered
+        so the selection is restored across the next update_nodes()."""
+        self._selected_node_num = node_num
+        self._select_row(node_num, scroll=True)
+
+    def _select_row(self, node_num: int, scroll: bool) -> None:
         row = self._model.row_of(node_num)
         if row is None:
             return
@@ -131,7 +149,8 @@ class NodesPage(QWidget):
         if not proxy_index.isValid():
             return
         self._table.setCurrentIndex(proxy_index)
-        self._table.scrollTo(proxy_index)
+        if scroll:
+            self._table.scrollTo(proxy_index)
 
     def _on_search(self, text: str) -> None:
         self._proxy.setFilterFixedString(text)
@@ -141,6 +160,7 @@ class NodesPage(QWidget):
         src_idx = self._proxy.mapToSource(current)
         node = self._model.node_at(src_idx.row())
         if node:
+            self._selected_node_num = node.node_num
             self._inspector.show_node(node)
             self.node_selected.emit(node.node_num)
 

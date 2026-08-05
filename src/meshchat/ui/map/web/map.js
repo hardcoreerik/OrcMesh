@@ -61,12 +61,35 @@ function toggleMapTheme() {
   if (bridge && bridge.themeChanged) bridge.themeChanged(next);
 }
 
+// Max on-screen individual markers before we prefer merging into clusters.
+// Leaflet.markercluster has no native "cap visible marker count" option — the
+// closest lever is maxClusterRadius (in screen pixels), which we vary by both
+// zoom and current node total below. Below the cap, markers fully separate
+// by z14 (true for virtually all real-world GPS spacing); above it, some
+// clustering is kept even at high zoom so a big mesh never tries to paint
+// hundreds of overlapping circles at once.
+var MAX_UNCLUSTERED_NODES = 100;
+
 // Cluster group
 if (typeof L.markerClusterGroup !== "undefined") {
   clusterGroup = L.markerClusterGroup({
     showCoverageOnHover: false,
-    maxClusterRadius: 40,
-    spiderfyOnMaxZoom: true,
+    // The default (true) spiderfies an already-tiny cluster into radiating
+    // legs at max zoom — with divIcon markers that produced a visible glitch
+    // (legs drawn with no marker at the end). Zoom-based declustering below
+    // already gets individual pins to separate out, so spiderfying on top of
+    // that is unnecessary and the safer default here is off.
+    spiderfyOnMaxZoom: false,
+    chunkedLoading: true,
+    removeOutsideVisibleBounds: true,
+    maxClusterRadius: function(zoom) {
+      var total = Object.keys(nodes).length;
+      if (total <= MAX_UNCLUSTERED_NODES) {
+        return zoom >= 14 ? 1 : 60;
+      }
+      // Large mesh: keep merging longer, and never fully disable clustering.
+      return zoom >= 17 ? 25 : 70;
+    },
   });
   map.addLayer(clusterGroup);
 } else {
@@ -74,20 +97,30 @@ if (typeof L.markerClusterGroup !== "undefined") {
 }
 
 // ── Marker helpers ─────────────────────────────────────────────────────────
+function badgeLabel(data) {
+  // Short enough to actually fit inside a small circle — first few
+  // alphanumeric characters of the display name, upper-cased.
+  var name = (data.name || "").replace(/[^A-Za-z0-9]/g, "");
+  if (name) return name.slice(0, 4).toUpperCase();
+  return "#" + (Math.abs(data.node_num) % 1000);
+}
+
 function markerIcon(data) {
   var cssClass = "mesh-marker-relayed";
-  var size = 12;
+  var size = 26;
   if (data.is_local) {
     cssClass = "mesh-marker-local";
-    size = 16;
+    size = 32;
   } else if (data.hops_used === 0) {
     cssClass = "mesh-marker-direct";
-    size = 14;
+    size = 30;
   } else if (data.last_heard_s !== null && data.last_heard_s > 3600) {
     cssClass = "mesh-marker-stale";
+    size = 24;
   }
   return L.divIcon({
     className: cssClass,
+    html: "<span>" + escapeHtml(badgeLabel(data)) + "</span>",
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
     popupAnchor: [0, -(size / 2 + 2)],
@@ -139,8 +172,9 @@ function updateNode(data) {
   } else {
     var marker = L.marker([data.lat, data.lon], { icon: markerIcon(data) });
     marker.bindPopup(buildPopup(data));
+    // The badge itself already shows an abbreviated name (see markerIcon());
+    // this tooltip is hover-only and shows the full name for disambiguation.
     marker.bindTooltip(escapeHtml(labelText(data)), {
-      permanent: true,
       direction: "top",
       className: "mesh-marker-label",
       offset: [0, -8],
