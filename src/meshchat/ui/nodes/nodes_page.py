@@ -29,15 +29,19 @@ log = logging.getLogger(__name__)
 class NodesPage(QWidget):
     """Full node table + inspector side panel."""
 
-    node_selected = Signal(int)          # node_num
+    # object, not int, on every node_num-carrying signal below: Meshtastic
+    # node_num is a 32-bit unsigned value that can exceed 0x7FFFFFFF, and a
+    # Qt-typed int signal (C++ int32) silently wraps it to negative — same
+    # bug as the map-pin click chain, see ARCHITECTURE.md.
+    node_selected = Signal(object)          # node_num
     # Context-menu actions, handled by MainWindow (which owns the controller)
-    message_requested = Signal(int, str)  # node_num, display_name
-    show_on_map_requested = Signal(int)
-    position_requested = Signal(int)
-    telemetry_requested = Signal(int)
-    traceroute_requested = Signal(int)
-    favorite_requested = Signal(int, bool)
-    remove_node_requested = Signal(int)
+    message_requested = Signal(object, str)  # node_num, display_name
+    show_on_map_requested = Signal(object)
+    position_requested = Signal(object)
+    telemetry_requested = Signal(object)
+    traceroute_requested = Signal(object)
+    favorite_requested = Signal(object, bool)
+    remove_node_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)

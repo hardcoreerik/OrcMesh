@@ -121,7 +121,11 @@ class ChatView(QWidget):
     """
 
     send_requested = Signal(str, int)          # text, channel_index (broadcast)
-    send_direct_requested = Signal(str, int)   # text, destination_num (direct message)
+    # object, not int, for destination_num: Meshtastic node_num is a 32-bit
+    # unsigned value that can exceed 0x7FFFFFFF — a Qt-typed int signal
+    # (C++ int32) silently wraps it to negative, same bug as the map-pin
+    # click chain (see ARCHITECTURE.md).
+    send_direct_requested = Signal(str, object)   # text, destination_num (direct message)
 
     def __init__(self, parent=None):
         super().__init__(parent)

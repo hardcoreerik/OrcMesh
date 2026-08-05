@@ -95,7 +95,12 @@ def _dedup_key(pkt: dict) -> str | None:
         payload = decoded.get("payload", b"") or b""
         raw = f"{sender}{portnum}{channel}{text}"
         raw_bytes = raw.encode() + (payload if isinstance(payload, bytes) else payload.encode())
-        ts_bucket = int(time.time() / 5) * 5  # 5-second bucket
+        # monotonic, not time.time(): the TTL/expiry tracking below this
+        # function (_is_duplicate) already uses time.monotonic(), which is
+        # immune to wall-clock adjustments (NTP sync, DST, manual changes).
+        # A clock jump mid-session could otherwise shift which 5-second
+        # bucket a packet lands in, letting a genuine duplicate slip through.
+        ts_bucket = int(time.monotonic() / 5) * 5  # 5-second bucket
         return hashlib.sha256(raw_bytes + str(ts_bucket).encode()).hexdigest()
     except Exception:
         return None

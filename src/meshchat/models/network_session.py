@@ -8,7 +8,16 @@ from datetime import datetime, timezone
 
 @dataclass
 class NetworkSession:
-    """Represents one monitoring session (from connect to disconnect/reset)."""
+    """Represents one monitoring session — one per app run.
+
+    Created once at app startup (or when the user presses Start New
+    Session) and lasts until: an explicit End Session action, the app
+    exiting cleanly, a database reset, or an optional long-disconnect
+    policy — see CLAUDE_MESHCHAT_NETWORK_MONITOR_ADDENDUM.md's session-
+    lifecycle section (kept outside this repo; see ROADMAP.md for why).
+    A simple transport reconnect must NOT reset it — do not call `.end()`
+    or otherwise rotate `.id` from a disconnect/reconnect handler.
+    """
 
     transport: str
     connection_target: str
@@ -38,6 +47,9 @@ class NetworkSession:
         return f"{d}d {rem // 3600}h"
 
     def end(self) -> None:
+        """Explicitly end this session — call only from an actual session
+        boundary (End Session action, DB reset), never from a plain
+        connect/disconnect handler. See the class docstring."""
         self.ended_at = datetime.now(timezone.utc)
 
     @classmethod

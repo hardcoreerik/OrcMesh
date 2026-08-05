@@ -400,9 +400,21 @@ class MonitorStore:
                 short_name=COALESCE(excluded.short_name, short_name),
                 role=COALESCE(excluded.role, role),
                 hw_model=COALESCE(excluded.hw_model, hw_model),
-                last_heard=excluded.last_heard,
-                packet_count=excluded.packet_count,
-                text_count=excluded.text_count""",
+                -- MAX(), not a bare overwrite: the in-memory NodeSnapshot these
+                -- values come from is already monotonic within one running
+                -- app instance, but this is the actual persistence boundary —
+                -- it shouldn't silently rely on every caller (present and
+                -- future) upholding that invariant. SQLite's multi-arg
+                -- max(a,b) is the scalar (not aggregate) form, but unlike the
+                -- aggregate it returns NULL if EITHER argument is NULL — and
+                -- last_heard has no NOT NULL/DEFAULT (a node can be seeded
+                -- before ever being "heard"), so it's wrapped in COALESCE to
+                -- fall back to whichever side is non-NULL instead of losing
+                -- data. packet_count/text_count can't be NULL (NodeSnapshot's
+                -- fields default to 0, never None), so a bare MAX is fine.
+                last_heard=COALESCE(MAX(excluded.last_heard, last_heard), excluded.last_heard, last_heard),
+                packet_count=MAX(excluded.packet_count, packet_count),
+                text_count=MAX(excluded.text_count, text_count)""",
             (
                 node.node_num, node.node_id, node.long_name, node.short_name,
                 node.role, node.hw_model,
@@ -419,7 +431,7 @@ class MonitorStore:
              observed_at, byte_count, status)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                "", msg.local_id, msg.packet_id, msg.channel_index, msg.destination_num,
+                msg.session_id, msg.local_id, msg.packet_id, msg.channel_index, msg.destination_num,
                 msg.direction.value, msg.sender_num, msg.sender_id, msg.sender_name, msg.text,
                 _dt_str(msg.timestamp), len(msg.text.encode("utf-8")), msg.status.value,
             ),

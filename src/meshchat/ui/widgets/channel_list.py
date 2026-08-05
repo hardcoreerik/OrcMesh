@@ -17,7 +17,10 @@ class ChannelList(QWidget):
     """Sidebar showing active channels plus a Direct Messages node picker."""
 
     channel_selected = Signal(int)     # channel_index
-    dm_target_selected = Signal(int, str)   # node_num, display_name
+    # object, not int, for node_num: Meshtastic node_num is a 32-bit
+    # unsigned value that can exceed 0x7FFFFFFF — a Qt-typed int signal
+    # (C++ int32) silently wraps it to negative (see ARCHITECTURE.md).
+    dm_target_selected = Signal(object, str)   # node_num, display_name
 
     def __init__(self, parent=None):
         super().__init__(parent)

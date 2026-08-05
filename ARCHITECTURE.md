@@ -24,6 +24,15 @@ actually shipped when.
 - Background write work (SQLite inserts, retention pruning) is similarly kept
   off the GUI thread by `services/monitor_store.py`, queued onto its own
   writer rather than blocking the event loop.
+- **Never put a Meshtastic `node_num` in a Qt `int`-typed `Signal`, `@Slot`,
+  or `Q_ARG`.** `node_num` is a 32-bit *unsigned* value and real hardware IDs
+  can exceed `0x7FFFFFFF`; Qt's `int` type is C++ `int32` (signed) and
+  silently wraps such values to negative, breaking any `dict.get(node_num)`
+  lookup downstream. Use `Signal(object)` (Python int, untouched) for
+  signals staying within Python, or `@Slot("qlonglong")`/`Q_ARG("qlonglong",
+  ...)` for the few places that actually cross a real C++ boundary (the
+  QWebChannel bridge in `ui/map/`, and the queued cross-thread calls into
+  `MeshtasticWorker`).
 
 ## Packet flow (the spine of the app)
 
@@ -129,6 +138,20 @@ dependencies, so they're cheap to construct, copy, and test. `NodeSnapshot`
 in particular is deliberately lightweight to construct (only `node_num` is
 required) since it's synthesized in several places (live ingest, both
 seeding paths) with only partial data available at each site.
+
+**`NetworkSession` lifecycle — deliberately app-lifetime, not
+connection-lifetime.** One `NetworkSession` is constructed at `MainWindow`
+startup and lives until the app exits; a disconnect/reconnect does **not**
+get a new one. This isn't an oversight — the network-monitor spec is
+explicit that "a simple transport reconnect should not automatically reset
+a session," and only defines a session boundary at an explicit End Session
+action, clean app exit, a database reset, or an optional long-disconnect
+policy (none of which are implemented yet — until they are,
+`self._session` in `MainWindow` is the one and only session for the app's
+whole run). Do not add code that calls `.end()` or otherwise resets/rotates
+this session's `.id` from a plain connect/disconnect handler — it looks
+like an obvious bug fix (`session_id` staying constant across reconnects)
+but it's actually the documented, correct behavior.
 
 `services/monitor_store.py` is the SQLite persistence layer (schema in
 `database/schema.py`): nodes, positions, telemetry, packets, and chat
