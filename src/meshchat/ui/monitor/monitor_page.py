@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from meshchat.analytics.packet_classifier import PORTNUM_TEXT
+from meshchat.utils.time_format import format_elapsed, relative_age
 from meshchat.controllers.meshtastic_controller import ConnectionState
 from meshchat.models.network_packet import NetworkPacket
 from meshchat.models.node_snapshot import NodeSnapshot
@@ -288,7 +289,7 @@ class MonitorPage(QWidget):
         )
         self._rank_last_heard.update_rows([
             (n.node_num, n.display_name, n.short_display,
-             _rel_age(n.last_heard))
+             relative_age(n.last_heard))
             for n in heard[:_ROW_LIMIT]
         ])
 
@@ -417,7 +418,7 @@ class MonitorPage(QWidget):
         if self._session_start is None:
             return
         delta = (datetime.now(timezone.utc) - self._session_start).total_seconds()
-        self._card_elapsed.set_value(_fmt_elapsed(int(delta)))
+        self._card_elapsed.set_value(format_elapsed(int(delta)))
 
     def _on_filter_changed(self, f: dict) -> None:
         self._active_filter = f
@@ -436,20 +437,3 @@ class MonitorPage(QWidget):
         return f"!{num:08x}"
 
 
-def _rel_age(ts: datetime | None) -> str:
-    if ts is None:
-        return "?"
-    delta = (datetime.now(timezone.utc) - ts).total_seconds()
-    if delta < 60:
-        return f"{int(delta)}s"
-    if delta < 3600:
-        return f"{int(delta / 60)}m"
-    return f"{int(delta / 3600)}h"
-
-
-def _fmt_elapsed(s: int) -> str:
-    if s < 60:
-        return f"{s}s"
-    if s < 86400:
-        return f"{s // 3600}h {(s % 3600) // 60}m"
-    return f"{s // 86400}d {(s % 86400) // 3600}h"
