@@ -216,3 +216,31 @@ class TestSendText:
             f"Text not sent; sent_texts={fakes[0].sent_texts}"
         )
         ctrl.shutdown()
+
+
+# ── Connection lost ────────────────────────────────────────────────────────────
+
+class TestConnectionLost:
+    def test_connection_lost_closes_the_interface(self):
+        # _on_connection_lost used to set state/emit signals but never call
+        # _close_interface() — every other path that ends a connection
+        # does. The dead interface's background reader thread and socket/
+        # handle would otherwise stay alive and leaking until the user
+        # happened to click Connect or Disconnect again.
+        from pubsub import pub
+
+        fakes = []
+        ctrl = MeshtasticController()
+
+        with _patch_ble(fakes):
+            ctrl.connect_ble("AA:BB:CC:DD:EE:FF")
+            _pump_events(1000)
+            assert fakes, "No fake interface was created"
+            assert not fakes[0]._closed
+
+            pub.sendMessage("meshtastic.connection.lost", interface=fakes[0])
+            _pump_events(500)
+
+        assert fakes[0]._closed, "Interface was not closed on connection.lost"
+        assert ctrl._worker._interface is None
+        ctrl.shutdown()

@@ -416,6 +416,13 @@ class MeshtasticWorker(QObject):
         if not self._is_active_interface(interface):
             return
         self._set_state(ConnectionState.ERROR, "Connection lost")
+        # Every other path that ends a connection (disconnect(), a failed
+        # (re)connect attempt) calls this — this one didn't, leaving the
+        # dead interface's background reader thread and socket/handle
+        # alive and leaking until the user happened to click Connect or
+        # Disconnect again. close() is wrapped in try/except internally,
+        # so calling it on an interface that's already failing is safe.
+        self._close_interface()
         self.disconnected.emit("Radio connection lost")
         self._emit_error(
             ErrorCode.CONNECTION_LOST,

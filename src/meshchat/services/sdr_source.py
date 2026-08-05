@@ -80,12 +80,14 @@ class SdrWorker(QObject):
 
     def _capture_loop(self) -> None:
         window = np.hanning(FFT_BINS)
+        had_error = False
         while self._running and self._sdr is not None:
             try:
                 samples = self._sdr.read_samples(_SAMPLES_PER_READ)
             except Exception as exc:
                 log.exception("SDR read failed")
                 self.error.emit(f"SDR read failed: {exc}")
+                had_error = True
                 break
 
             # Average several FFTs per displayed row to smooth the noise floor
@@ -102,7 +104,13 @@ class SdrWorker(QObject):
             self.row_ready.emit(power_db.astype(np.float32))
 
         self._close()
-        self.stopped.emit("Capture stopped")
+        # Only emit stopped for a normal stop — this used to fire
+        # unconditionally, so an error exit emitted BOTH error and stopped,
+        # and SpectrumPage._on_stopped()'s handler (which runs after
+        # _on_error()) then overwrote the "Error" status text with "Capture
+        # stopped", silently hiding that anything had gone wrong.
+        if not had_error:
+            self.stopped.emit("Capture stopped")
 
     @Slot()
     def stop(self) -> None:

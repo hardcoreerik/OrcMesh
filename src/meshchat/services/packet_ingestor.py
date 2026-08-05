@@ -87,7 +87,12 @@ def _dedup_key(pkt: dict) -> str | None:
     portnum = _get(decoded, "portnum")
     channel = _get(pkt, "channel", "channelIndex") or 0
 
-    if sender is not None and pid:
+    # pid is not None, not truthy `and pid`: a packet id of 0 is a
+    # legitimate value (same node_num == 0 pattern fixed elsewhere in this
+    # codebase) and is just as strong a dedup key as any other id — a
+    # truthy check would wrongly fall through to the weaker, 5-second-
+    # bucketed fallback fingerprint for it.
+    if sender is not None and pid is not None:
         return f"{sender}:{pid}:{portnum}:{channel}"
     # Fallback fingerprint
     try:
