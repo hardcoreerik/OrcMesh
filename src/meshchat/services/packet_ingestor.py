@@ -367,6 +367,11 @@ class PacketIngestor(QObject):
         self.node_updated.emit(snap)
 
     def _handle_position(self, raw: dict, pkt: NetworkPacket) -> None:
+        if pkt.sender_num is None:
+            # positions.node_num is NOT NULL, so an anonymous position packet
+            # would fail the insert and land on the map keyed by None.
+            log.debug("Ignoring position packet with no sender")
+            return
         decoded = raw.get("decoded", {}) or {}
         pos_data = decoded.get("position", {}) or {}
         if not pos_data:
@@ -414,6 +419,10 @@ class PacketIngestor(QObject):
             log.debug("Position parse error: %s", exc)
 
     def _handle_telemetry(self, raw: dict, pkt: NetworkPacket) -> None:
+        if pkt.sender_num is None:
+            # Same as positions: telemetry.node_num is NOT NULL.
+            log.debug("Ignoring telemetry packet with no sender")
+            return
         decoded = raw.get("decoded", {}) or {}
         tel_data = decoded.get("telemetry", {}) or {}
         if not tel_data:

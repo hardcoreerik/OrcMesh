@@ -52,6 +52,11 @@ class ErrorCode(Enum):
 # Meshtastic's reserved "send to everyone" node number.
 BROADCAST_NUM = 0xFFFFFFFF
 
+#: Maximum UTF-8 payload we will hand to the radio for one text message.
+#: Single-sourced: the composer's byte counter and both send paths read this,
+#: so the limit shown to the user cannot drift from the one enforced.
+MAX_MESSAGE_BYTES = 200
+
 
 class MessageDirection(Enum):
     INBOUND = "inbound"
@@ -667,39 +672,58 @@ class MeshtasticWorker(QObject):
     # Slot: Send text
     # -----------------------------------------------------------------------
 
-    @Slot(str, int)
-    def send_channel_text(self, text: str, channel_index: int) -> None:
+    def _prepare_outgoing(self, text: str) -> str | None:
+        """Validate and normalise outgoing text.
+
+        Returns the text to send, or None if it must not be sent (an error has
+        already been emitted where one is warranted). Shared by both send
+        paths so the rules cannot diverge between broadcast and direct.
+        """
         if self._state != ConnectionState.CONNECTED or self._interface is None:
-            self._emit_error(ErrorCode.SEND_FAILED, "Not Connected", "Cannot send: not connected to a radio.", False)
-            return
+            self._emit_error(
+                ErrorCode.SEND_FAILED, "Not Connected",
+                "Cannot send: not connected to a radio.", False,
+            )
+            return None
+
         text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
         if not text:
-            return
+            return None  # empty input is a no-op, not an error worth surfacing
+
         byte_len = len(text.encode("utf-8"))
-        if byte_len > 200:
+        if byte_len > MAX_MESSAGE_BYTES:
             self._emit_error(
                 ErrorCode.INVALID_MESSAGE,
                 "Message Too Long",
-                f"Message is {byte_len} UTF-8 bytes. The safety limit is 200 bytes. Shorten the message.",
+                f"Message is {byte_len} UTF-8 bytes. The safety limit is "
+                f"{MAX_MESSAGE_BYTES} bytes. Shorten the message.",
                 False,
             )
-            return
+            return None
+        return text
+
+    def _dispatch_text(self, text: str, **send_kwargs) -> None:
+        """Hand a validated message to the radio and report the outcome."""
         try:
-            packet = self._interface.sendText(
-                text=text,
-                destinationId="^all",
-                wantAck=True,
-                channelIndex=channel_index,
-            )
-            packet_id = getattr(packet, "id", None)
+            packet = self._interface.sendText(text=text, wantAck=True, **send_kwargs)
             self.message_status_changed.emit(
-                packet_id or 0,
+                getattr(packet, "id", None) or 0,
                 MessageStatus.ACCEPTED_BY_RADIO,
                 "Accepted by radio",
             )
         except Exception as exc:
             log.exception("Send failed")
-            self._emit_error(ErrorCode.SEND_FAILED, "Send Failed", f"Could not send message: {exc}", True)
+            self._emit_error(
+                ErrorCode.SEND_FAILED, "Send Failed",
+                f"Could not send message: {exc}", True,
+            )
+
+    @Slot(str, int)
+    def send_channel_text(self, text: str, channel_index: int) -> None:
+        prepared = self._prepare_outgoing(text)
+        if prepared is None:
+            return
+        self._dispatch_text(prepared, destinationId="^all", channelIndex=channel_index)
 
     # -----------------------------------------------------------------------
     # Slot: Send direct message
@@ -707,36 +731,10 @@ class MeshtasticWorker(QObject):
 
     @Slot(str, int)
     def send_direct_text(self, text: str, destination_num: int) -> None:
-        if self._state != ConnectionState.CONNECTED or self._interface is None:
-            self._emit_error(ErrorCode.SEND_FAILED, "Not Connected", "Cannot send: not connected to a radio.", False)
+        prepared = self._prepare_outgoing(text)
+        if prepared is None:
             return
-        text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-        if not text:
-            return
-        byte_len = len(text.encode("utf-8"))
-        if byte_len > 200:
-            self._emit_error(
-                ErrorCode.INVALID_MESSAGE,
-                "Message Too Long",
-                f"Message is {byte_len} UTF-8 bytes. The safety limit is 200 bytes. Shorten the message.",
-                False,
-            )
-            return
-        try:
-            packet = self._interface.sendText(
-                text=text,
-                destinationId=destination_num,
-                wantAck=True,
-            )
-            packet_id = getattr(packet, "id", None)
-            self.message_status_changed.emit(
-                packet_id or 0,
-                MessageStatus.ACCEPTED_BY_RADIO,
-                "Accepted by radio",
-            )
-        except Exception as exc:
-            log.exception("Direct send failed")
-            self._emit_error(ErrorCode.SEND_FAILED, "Send Failed", f"Could not send message: {exc}", True)
+        self._dispatch_text(prepared, destinationId=destination_num)
 
     # -----------------------------------------------------------------------
     # Slots: per-node actions (right-click menu on the Nodes page)

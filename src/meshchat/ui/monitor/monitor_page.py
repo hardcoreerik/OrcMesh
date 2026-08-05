@@ -282,11 +282,16 @@ class MonitorPage(QWidget):
         age_s = self._active_filter.get("age_s")
 
         # Last Heard
-        heard = sorted(
-            [n for n in nodes if n.last_heard],
-            key=lambda n: n.last_heard,
-            reverse=not self._rank_last_heard.is_flipped(),
-        )
+        # Bind to a local so the sort key is provably non-None: sorting a
+        # datetime | None raises TypeError if a None ever slips through.
+        heard_nodes = [(n, n.last_heard) for n in nodes if n.last_heard is not None]
+        heard = [
+            n for n, _ in sorted(
+                heard_nodes,
+                key=lambda pair: pair[1],
+                reverse=not self._rank_last_heard.is_flipped(),
+            )
+        ]
         self._rank_last_heard.update_rows([
             (n.node_num, n.display_name, n.short_display,
              relative_age(n.last_heard))

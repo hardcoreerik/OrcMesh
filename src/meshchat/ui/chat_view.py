@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from meshchat.controllers.meshtastic_controller import (
+    MAX_MESSAGE_BYTES,
     ChatMessage,
     MessageStatus,
 )
@@ -22,7 +23,9 @@ from meshchat.ui.widgets.message_bubble import MessageBubble
 
 log = logging.getLogger(__name__)
 
-_BYTE_LIMIT = 200
+# Mirrors the controller's enforced limit — imported rather than restated so
+# the counter shown to the user can never disagree with what is enforced.
+_BYTE_LIMIT = MAX_MESSAGE_BYTES
 
 
 class ComposerWidget(QWidget):
@@ -58,7 +61,7 @@ class ComposerWidget(QWidget):
         layout.addLayout(row)
 
         # Byte count
-        self._byte_label = QLabel("0 / 200 bytes")
+        self._byte_label = QLabel(f"0 / {_BYTE_LIMIT} bytes")
         self._byte_label.setObjectName("byteCount")
         self._byte_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         layout.addWidget(self._byte_label)
@@ -229,7 +232,8 @@ class ChatView(QWidget):
 
     def _rebuild_bubbles(self) -> None:
         self._clear_bubbles()
-        msgs = self._messages_by_key.get(self._current_key, [])
+        key = self._current_key
+        msgs = self._messages_by_key.get(key, []) if key is not None else []
         if msgs:
             self._empty_label.setVisible(False)
             for m in msgs:

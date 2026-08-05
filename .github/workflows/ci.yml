@@ -44,6 +44,9 @@ jobs:
       - name: Lint
         run: ruff check src tests scripts
 
+      - name: Type check
+        run: mypy src/meshchat
+
       - name: Test
         # The Qt widgets under test need a display; the offscreen platform
         # plugin gives them one without a real desktop session.

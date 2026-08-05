@@ -48,7 +48,30 @@ def _install_excepthook() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(prog="meshchat", description="MeshChat for Windows")
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging")
+    parser.add_argument(
+        "--version", action="store_true",
+        help="Print the MeshChat and dependency versions and exit",
+    )
     args, _rest = parser.parse_known_args()
+
+    if args.version:
+        # Answered before Qt loads: useful in bug reports, and it must work
+        # even when the GUI stack cannot start at all.
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as pkg_version
+
+        from meshchat.version import __version__
+
+        print(f"MeshChat {__version__}")
+        # Package metadata rather than a __version__ attribute: meshtastic
+        # does not expose one, so getattr() reported "unknown" for it.
+        for dist in ("meshtastic", "PySide6", "pyqtgraph"):
+            try:
+                print(f"{dist} {pkg_version(dist)}")
+            except PackageNotFoundError:
+                print(f"{dist} (not installed)")
+        print(f"Python {sys.version.split()[0]}")
+        return 0
 
     # Logging must be configured before any other import that touches logging
     from meshchat.services.app_logging import configure_logging
