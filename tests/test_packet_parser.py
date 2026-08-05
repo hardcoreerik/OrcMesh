@@ -2,7 +2,6 @@
 import json
 from pathlib import Path
 
-import pytest
 
 from meshchat.utils.packet_parser import ParsedTextMessage, parse_text_packet
 

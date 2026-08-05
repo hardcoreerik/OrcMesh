@@ -13,7 +13,6 @@ import unittest.mock as mock
 from contextlib import contextmanager
 from typing import List
 
-import pytest
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
 _app = QCoreApplication.instance() or QCoreApplication(sys.argv[:1])

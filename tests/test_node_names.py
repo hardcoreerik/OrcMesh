@@ -1,5 +1,4 @@
 """Tests for utils.node_names."""
-import pytest
 from meshchat.utils.node_names import resolve_node_name, resolve_short_name
 
 

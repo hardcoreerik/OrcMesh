@@ -1,5 +1,4 @@
 """Tests for analytics.packet_classifier."""
-import pytest
 from meshchat.analytics.packet_classifier import (
     classify_portnum,
     is_nodeinfo_packet,

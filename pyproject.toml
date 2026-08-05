@@ -21,6 +21,12 @@ dependencies = [
 meshchat = "meshchat.app:main"
 
 [project.optional-dependencies]
+# RTL-SDR spectrum waterfall. Also needs the native librtlsdr driver — on
+# Windows, install the WinUSB driver for the dongle with Zadig. MeshChat runs
+# normally without this; the Spectrum page just reports it as unavailable.
+sdr = [
+    "pyrtlsdr>=0.3",
+]
 dev = [
     "pytest>=8,<10",
     "pytest-timeout>=2,<3",
@@ -47,6 +53,13 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "W"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Qt/Meshtastic imports are deliberately deferred until after logging and the
+# QApplication are configured, so module-level-import-not-at-top is expected.
+"src/meshchat/__main__.py" = ["E402"]
+# Tests must instantiate QCoreApplication before importing Qt-dependent modules.
+"tests/*" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"

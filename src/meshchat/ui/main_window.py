@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -12,14 +11,12 @@ from PySide6.QtCore import Qt, QSettings, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QHBoxLayout,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QStackedWidget,
-    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -222,6 +219,17 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
 
         file_menu = menu_bar.addMenu("File")
+
+        export_pkts_act = QAction("Export Packet Log to CSV…", self)
+        export_pkts_act.triggered.connect(self._export_packets)
+        file_menu.addAction(export_pkts_act)
+
+        export_nodes_act = QAction("Export Nodes to CSV…", self)
+        export_nodes_act.triggered.connect(self._export_nodes)
+        file_menu.addAction(export_nodes_act)
+
+        file_menu.addSeparator()
+
         quit_act = QAction("Quit", self)
         quit_act.setShortcut("Ctrl+Q")
         quit_act.triggered.connect(self.close)
@@ -242,6 +250,63 @@ class MainWindow(QMainWindow):
         about_act = QAction("About MeshChat", self)
         about_act.triggered.connect(self._show_about)
         help_menu.addAction(about_act)
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def _export_packets(self) -> None:
+        from meshchat.services.export_service import ExportService
+
+        rows = self._ingestor.get_recent_packets()
+        if not rows:
+            self._status_bar.showMessage("Nothing to export — no packets captured yet", 5000)
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Packet Log", "meshchat-packets.csv", "CSV files (*.csv)"
+        )
+        if not path:
+            return
+
+        # Message text is personal content, so it is opt-in rather than
+        # silently written into a file the user may share.
+        include_text = QMessageBox.question(
+            self,
+            "Include message text?",
+            "Include the text of received messages in the export?\n\n"
+            "Message content is personal — leave this out if you plan to share the file.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
+
+        try:
+            count = ExportService.export_packets_csv(rows, Path(path), include_text=include_text)
+            self._status_bar.showMessage(f"Exported {count} packet(s) to {path}", 8000)
+        except OSError as exc:
+            log.exception("Packet export failed")
+            QMessageBox.warning(self, "Export Failed", f"Could not write the file:\n{exc}")
+
+    def _export_nodes(self) -> None:
+        from meshchat.services.export_service import ExportService
+
+        nodes = self._ingestor.get_nodes()
+        if not nodes:
+            self._status_bar.showMessage("Nothing to export — no nodes known yet", 5000)
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Nodes", "meshchat-nodes.csv", "CSV files (*.csv)"
+        )
+        if not path:
+            return
+
+        try:
+            count = ExportService.export_nodes_csv(nodes, Path(path))
+            self._status_bar.showMessage(f"Exported {count} node(s) to {path}", 8000)
+        except OSError as exc:
+            log.exception("Node export failed")
+            QMessageBox.warning(self, "Export Failed", f"Could not write the file:\n{exc}")
 
     def _open_log_folder(self) -> None:
         _LOG_DIR.mkdir(parents=True, exist_ok=True)

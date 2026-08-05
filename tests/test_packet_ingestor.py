@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
-import pytest
 
 # ── Minimal Qt app for QObject signals ───────────────────────────────────────
 # PacketIngestor is a QObject; Qt signals require at minimum a QCoreApplication.
@@ -262,3 +260,62 @@ class TestSignals:
         pm, ph = stats[0]
         assert pm >= 1
         assert ph >= 1
+
+
+# ── Thread safety of the packet ring ──────────────────────────────────────────
+# The worker thread appends while the GUI thread snapshots for CSV export.
+#
+# Honest caveat: on CPython with the GIL, `list(deque)` takes a C-level fast
+# path and does NOT reliably raise, so this is a smoke test, not a test with
+# teeth — it passes with or without the lock. The lock is still correct:
+# that fast path is an unguaranteed implementation detail, Python-level
+# iteration over the same deque *does* raise "deque mutated during iteration",
+# and free-threaded builds remove the GIL this relies on.
+
+class TestRecentPacketsThreadSafety:
+    def test_snapshot_while_appending_does_not_raise(self):
+        import threading
+
+        ing = _make_ingestor()
+        errors: list[BaseException] = []
+        stop = threading.Event()
+
+        def writer():
+            try:
+                i = 0
+                while not stop.is_set():
+                    pkt = dict(_FIXTURES["direct_text"])
+                    pkt["id"] = i  # unique id so dedup never suppresses it
+                    i += 1
+                    ing.ingest_raw(pkt)
+            except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+                errors.append(exc)
+
+        def reader():
+            try:
+                for _ in range(3000):
+                    ing.get_recent_packets()
+            except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+                errors.append(exc)
+
+        w = threading.Thread(target=writer, daemon=True)
+        r = threading.Thread(target=reader, daemon=True)
+        w.start()
+        r.start()
+        r.join(timeout=30)
+        stop.set()
+        w.join(timeout=30)
+
+        assert not errors, f"concurrent access raised: {errors[0]!r}"
+
+    def test_snapshot_is_a_copy_not_a_live_view(self):
+        ing = _make_ingestor()
+        ing.ingest_raw(dict(_FIXTURES["direct_text"], id=1))
+        snapshot = ing.get_recent_packets()
+        before = len(snapshot)
+        ing.ingest_raw(dict(_FIXTURES["direct_text"], id=2))
+        assert len(snapshot) == before, "snapshot must not reflect later appends"
+
+    def test_ring_is_bounded(self):
+        ing = _make_ingestor()
+        assert ing._recent_packets.maxlen == ing._recent_max

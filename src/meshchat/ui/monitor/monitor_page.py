@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QFrame,
     QHBoxLayout,
-    QLabel,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -175,7 +174,8 @@ class MonitorPage(QWidget):
         self._session_start: datetime | None = None
         self._session_pkts = 0
         self._nodes: dict[int, NodeSnapshot] = {}
-        self._recent_packets: list[NetworkPacket] = []
+        # deque with maxlen evicts in O(1) rather than re-slicing a 10k list
+        self._recent_packets: deque[NetworkPacket] = deque(maxlen=10_000)
         self._active_filter: dict = self._filter_bar.current_filter()
         self._local_node_num: int | None = None
         self._map_has_nodes = False
@@ -206,8 +206,6 @@ class MonitorPage(QWidget):
             return
         self._session_pkts += 1
         self._recent_packets.append(pkt)
-        if len(self._recent_packets) > 10_000:
-            self._recent_packets = self._recent_packets[-10_000:]
 
         self._chart.record_packet(pkt.portnum)
         self._pkt_log.add_packet(pkt)

@@ -5,14 +5,14 @@ import hashlib
 import json
 import logging
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from threading import Lock
 
 from PySide6.QtCore import QObject, Signal
 
 from meshchat.analytics.hop_metrics import compute_hops_used
-from meshchat.analytics.packet_classifier import classify_portnum, packet_category
+from meshchat.analytics.packet_classifier import classify_portnum
 from meshchat.analytics.rolling_rates import DualRateTracker
 from meshchat.models.network_packet import NetworkPacket
 from meshchat.models.network_session import NetworkSession
@@ -135,8 +135,14 @@ class PacketIngestor(QObject):
         self._nodes_lock = Lock()
 
         # In-memory packet ring (last 10k)
-        self._recent_packets: list[NetworkPacket] = []
+        # deque with maxlen evicts in O(1); the previous list+slice rebuilt a
+        # 10k-element list on every packet once the buffer was full.
         self._recent_max = 10_000
+        self._recent_packets: deque[NetworkPacket] = deque(maxlen=self._recent_max)
+        # Appended from the worker thread, snapshotted from the GUI thread
+        # (CSV export). Copying a deque while it is being appended to can
+        # raise "deque mutated during iteration", so both sides take this.
+        self._recent_lock = Lock()
 
     def ingest_raw(self, raw: dict) -> None:
         """
@@ -152,9 +158,8 @@ class PacketIngestor(QObject):
             return
 
         # Update ring buffer
-        self._recent_packets.append(pkt)
-        if len(self._recent_packets) > self._recent_max:
-            self._recent_packets = self._recent_packets[-self._recent_max:]
+        with self._recent_lock:
+            self._recent_packets.append(pkt)
 
         # Update session counter
         self._session.packet_count += 1
@@ -197,9 +202,15 @@ class PacketIngestor(QObject):
             return False
 
     def _prune_dedup(self, now: float) -> None:
-        to_delete = [k for k, exp in self._dedup.items() if exp <= now]
-        for k in to_delete:
-            del self._dedup[k]
+        # Every entry gets the same fixed TTL and the OrderedDict is in
+        # insertion order, so expiries are ascending — the first unexpired
+        # entry means everything after it is unexpired too. Stopping there
+        # keeps this O(expired) instead of O(cache size) on every packet.
+        while self._dedup:
+            key, expiry = next(iter(self._dedup.items()))
+            if expiry > now:
+                break
+            del self._dedup[key]
 
     # ------------------------------------------------------------------
     # Normalization
@@ -470,7 +481,8 @@ class PacketIngestor(QObject):
             return self._nodes.get(node_num)
 
     def get_recent_packets(self) -> list[NetworkPacket]:
-        return list(self._recent_packets)
+        with self._recent_lock:
+            return list(self._recent_packets)
 
     def update_node_from_db(self, node_num: int, nodes_by_num: dict) -> None:
         """Merge NodeDB data into the in-memory snapshot."""

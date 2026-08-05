@@ -6,8 +6,6 @@ Called by:     scripts/build.ps1  (auto, when vendor/ is missing)
 """
 from __future__ import annotations
 
-import hashlib
-import shutil
 import sys
 import urllib.request
 from pathlib import Path
@@ -21,7 +19,7 @@ ASSETS: list[tuple[str, str, str]] = [
     # (url, dest_relative_to_VENDOR, sha256_prefix_8)
     (
         f"https://unpkg.com/leaflet@{LEAFLET_VERSION}/dist/leaflet.js",
-        f"leaflet/leaflet.js",
+        "leaflet/leaflet.js",
         "",  # no checksum check — just a convenience download
     ),
     (

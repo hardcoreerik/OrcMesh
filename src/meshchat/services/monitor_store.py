@@ -1,12 +1,11 @@
 """MeshChat – services: SQLite-backed monitor data store with WAL mode."""
 from __future__ import annotations
 
-import json
 import logging
 import queue
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 

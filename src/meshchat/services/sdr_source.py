@@ -112,8 +112,8 @@ class SdrWorker(QObject):
         if self._sdr is not None:
             try:
                 self._sdr.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Closing the RTL-SDR failed: %s", exc)
             self._sdr = None
         self._running = False
 
