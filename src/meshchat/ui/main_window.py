@@ -175,6 +175,7 @@ class MainWindow(QMainWindow):
         ctrl.channels_updated.connect(self._on_channels_updated)
         ctrl.channels_updated.connect(self._monitor_page.set_channels)
         ctrl.lora_config_updated.connect(self._monitor_page.set_radio_config)
+        ctrl.lora_config_updated.connect(self._spectrum_page.set_radio_config)
         ctrl.message_received.connect(self._on_message_received)
         ctrl.message_status_changed.connect(self._on_message_status)
         ctrl.ble_scan_finished.connect(self._conn_bar.set_ble_devices)

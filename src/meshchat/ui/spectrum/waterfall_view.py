@@ -57,6 +57,7 @@ class WaterfallView(QWidget):
         self._history: np.ndarray | None = None
         self._center_hz = 0.0
         self._span_hz = 0.0
+        self._marker_items: list = []
 
     # ------------------------------------------------------------------
 
@@ -86,3 +87,46 @@ class WaterfallView(QWidget):
         if self._history is not None:
             self._history.fill(-120.0)
             self._image.setImage(self._history, autoLevels=False)
+
+    # ------------------------------------------------------------------
+    # Channel markers
+    # ------------------------------------------------------------------
+
+    def set_markers(self, markers) -> None:
+        """Overlay where known mesh channels sit in the band.
+
+        `markers` is a sequence of analytics.lora_bands.ChannelMarker.
+        Each is drawn as a shaded band the width of its LoRa bandwidth, so
+        you can see whether the energy in the waterfall lines up with a
+        channel the mesh actually uses.
+        """
+        for item in self._marker_items:
+            self._plot.removeItem(item)
+        self._marker_items.clear()
+
+        for m in markers:
+            center = m.center_mhz * 1e6
+            half = (m.bandwidth_khz * 1e3) / 2
+            label_lower = m.label.lower()
+            is_active = "active" in label_lower or "nominal" in label_lower
+
+            region = pg.LinearRegionItem(
+                values=(center - half, center + half),
+                brush=pg.mkBrush(0, 212, 255, 45 if is_active else 18),
+                pen=pg.mkPen("#00D4FF" if is_active else "#3A4870",
+                             width=2 if is_active else 1),
+                movable=False,
+            )
+            region.setZValue(10)
+            self._plot.addItem(region)
+            self._marker_items.append(region)
+
+            label = pg.TextItem(
+                m.label,
+                color="#00D4FF" if is_active else "#5A6690",
+                anchor=(0.5, 0),
+            )
+            label.setPos(center, 0)
+            label.setZValue(11)
+            self._plot.addItem(label)
+            self._marker_items.append(label)

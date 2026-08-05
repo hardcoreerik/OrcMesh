@@ -20,17 +20,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from meshchat.analytics.lora_bands import (
+    MESHCORE_PLANS,
+    MESHTASTIC_REGIONS,
+    meshcore_markers,
+    meshtastic_markers,
+)
 from meshchat.ui.spectrum.waterfall_view import WaterfallView
 
 log = logging.getLogger(__name__)
-
-# Common Meshtastic/LoRa ISM band centres, by region
-_BAND_PRESETS = [
-    ("US / ANZ  902–928 MHz", 915.0),
-    ("EU  863–870 MHz", 868.0),
-    ("CN  470–510 MHz", 490.0),
-    ("433 MHz ISM", 433.5),
-]
 
 
 class SpectrumPage(QWidget):
@@ -56,11 +54,16 @@ class SpectrumPage(QWidget):
         title.setObjectName("monitorTitle")
         tb.addWidget(title)
 
-        tb.addWidget(QLabel("Band:"))
+        tb.addWidget(QLabel("Protocol:"))
+        self._protocol = QComboBox()
+        self._protocol.setFixedWidth(110)
+        self._protocol.addItems(["Meshtastic", "MeshCore"])
+        self._protocol.currentIndexChanged.connect(self._on_protocol_changed)
+        tb.addWidget(self._protocol)
+
+        tb.addWidget(QLabel("Region:"))
         self._band = QComboBox()
-        self._band.setFixedWidth(180)
-        for label, mhz in _BAND_PRESETS:
-            self._band.addItem(label, userData=mhz)
+        self._band.setFixedWidth(150)
         self._band.currentIndexChanged.connect(self._on_band_changed)
         tb.addWidget(self._band)
 
@@ -87,6 +90,10 @@ class SpectrumPage(QWidget):
 
         tb.addStretch()
 
+        self._marker_lbl = QLabel("")
+        self._marker_lbl.setStyleSheet("color: #00D4FF; font-size: 11px;")
+        tb.addWidget(self._marker_lbl)
+
         self._status = QLabel("")
         self._status.setStyleSheet("color: #5A6690; font-size: 11px;")
         tb.addWidget(self._status)
@@ -105,7 +112,90 @@ class SpectrumPage(QWidget):
         self._notice.setVisible(False)
         layout.addWidget(self._notice)
 
+        # Populated from the connected radio when available, so the markers
+        # reflect the mesh you're actually on rather than a generic default.
+        self._live_region: str | None = None
+        self._live_preset: str | None = None
+        self._live_channel_num: int = 0
+
+        self._on_protocol_changed(0)
         self._refresh_availability()
+
+    # ------------------------------------------------------------------
+    # Band plan / markers
+    # ------------------------------------------------------------------
+
+    def set_radio_config(self, summary) -> None:
+        """Take the live LoRa config from the connected radio so the spectrum
+        view marks the exact slot this mesh is using."""
+        if summary is None:
+            self._live_region = None
+            return
+        self._live_region = summary.region
+        self._live_preset = summary.modem_preset if summary.use_preset else None
+        self._live_channel_num = summary.channel_num
+
+        # Follow the radio: switch to Meshtastic + its region automatically
+        if summary.region:
+            self._protocol.setCurrentIndex(0)
+            idx = self._band.findData(summary.region)
+            if idx >= 0:
+                self._band.setCurrentIndex(idx)
+        self._apply_markers()
+
+    def _on_protocol_changed(self, _idx: int) -> None:
+        is_meshcore = self._protocol.currentText() == "MeshCore"
+        self._band.blockSignals(True)
+        self._band.clear()
+        if is_meshcore:
+            for key, plan in MESHCORE_PLANS.items():
+                self._band.addItem(plan.region, userData=key)
+        else:
+            for key, band in MESHTASTIC_REGIONS.items():
+                self._band.addItem(band.name, userData=key)
+            default = self._band.findData(self._live_region or "US")
+            if default >= 0:
+                self._band.setCurrentIndex(default)
+        self._band.blockSignals(False)
+        self._on_band_changed(self._band.currentIndex())
+
+    def _current_markers(self) -> list:
+        key = self._band.currentData()
+        if not key:
+            return []
+        if self._protocol.currentText() == "MeshCore":
+            return meshcore_markers(key)
+        # Mark the active slot plus a couple either side, so neighbouring
+        # meshes sharing the band are visible too.
+        channel_num = self._live_channel_num if key == self._live_region else 0
+        return meshtastic_markers(key, self._live_preset, channel_num, include_neighbours=2)
+
+    def _apply_markers(self) -> None:
+        markers = self._current_markers()
+        self._waterfall.set_markers(markers)
+        if not markers:
+            self._marker_lbl.setText("")
+            self._marker_lbl.setToolTip("")
+            return
+
+        primary = next(
+            (m for m in markers
+             if "active" in m.label.lower() or "nominal" in m.label.lower()),
+            markers[0],
+        )
+        self._marker_lbl.setText(f"Marked: {primary.label} @ {primary.center_mhz:.3f} MHz")
+        if "nominal" in primary.label.lower():
+            self._marker_lbl.setToolTip(
+                "The radio reports channel 0, which means the firmware picks the "
+                "actual slot by hashing the channel name. This marks the nominal "
+                "slot 0 — the real transmissions may sit elsewhere in the band, so "
+                "trust the energy in the waterfall over this marker."
+            )
+        else:
+            self._marker_lbl.setToolTip(
+                f"{primary.bandwidth_khz:.0f} kHz wide, centred on "
+                f"{primary.center_mhz:.3f} MHz."
+            )
 
     # ------------------------------------------------------------------
 
@@ -129,9 +219,21 @@ class SpectrumPage(QWidget):
             self._waterfall.setVisible(False)
 
     def _on_band_changed(self, idx: int) -> None:
-        mhz = self._band.currentData()
-        if mhz:
-            self._center.setValue(mhz)
+        key = self._band.currentData()
+        if not key:
+            return
+        if self._protocol.currentText() == "MeshCore":
+            plan = MESHCORE_PLANS.get(key)
+            if plan:
+                self._center.setValue(plan.freq_mhz)
+        else:
+            band = MESHTASTIC_REGIONS.get(key)
+            if band:
+                # Centre on the active slot if we know it, else the band centre
+                markers = self._current_markers()
+                active = next((m for m in markers if "active" in m.label.lower()), None)
+                self._center.setValue(active.center_mhz if active else band.center_mhz)
+        self._apply_markers()
 
     def _on_start_stop(self) -> None:
         if self._running:
@@ -164,6 +266,8 @@ class SpectrumPage(QWidget):
 
     def _on_started(self, center_hz: float, span_hz: float, bins: int) -> None:
         self._waterfall.configure(center_hz, span_hz, bins)
+        # configure() rebuilds the plot geometry, so re-draw the markers over it
+        self._apply_markers()
         self._status.setText(
             f"Capturing — {center_hz / 1e6:.3f} MHz, {span_hz / 1e6:.2f} MS/s"
         )
