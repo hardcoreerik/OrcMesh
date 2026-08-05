@@ -3,7 +3,10 @@
 last_hop_start - last_hops_used was shown with no bounds check. Nothing
 upstream guarantees hops_used <= hop_start for a malformed/out-of-order
 packet, and an unclamped negative value would be confusing rather than
-informative.
+informative. Treated as unknown ("—"), matching
+analytics/hop_metrics.compute_hops_used's convention for the same
+hop_limit > hop_start case — not clamped to a fabricated 0, which would
+look like a real (if unlikely) measurement.
 """
 from __future__ import annotations
 
@@ -29,9 +32,14 @@ class TestHopsLeft:
         inspector.show_node(_snapshot(last_hop_start=5, last_hops_used=2))
         assert inspector._hops_left.text() == "3"
 
-    def test_hops_used_exceeding_hop_start_is_clamped_to_zero(self):
+    def test_hops_used_exceeding_hop_start_shows_unknown(self):
         inspector = NodeInspector()
         inspector.show_node(_snapshot(last_hop_start=2, last_hops_used=5))
+        assert inspector._hops_left.text() == "—"
+
+    def test_hops_used_equal_to_hop_start_shows_zero_left(self):
+        inspector = NodeInspector()
+        inspector.show_node(_snapshot(last_hop_start=3, last_hops_used=3))
         assert inspector._hops_left.text() == "0"
 
     def test_missing_fields_show_placeholder(self):

@@ -94,6 +94,14 @@ class SpectrumPage(QWidget):
         self._marker_lbl.setStyleSheet("color: #00D4FF; font-size: 11px;")
         tb.addWidget(self._marker_lbl)
 
+        # Separate from self._status (SDR availability / capture-lifecycle
+        # messages) — a band change doesn't affect either of those, so
+        # writing to self._status here would silently stomp whatever
+        # capture-state message was already showing.
+        self._band_warning_lbl = QLabel("")
+        self._band_warning_lbl.setStyleSheet("color: #FFB800; font-size: 11px;")
+        tb.addWidget(self._band_warning_lbl)
+
         self._status = QLabel("")
         self._status.setStyleSheet("color: #5A6690; font-size: 11px;")
         tb.addWidget(self._status)
@@ -242,13 +250,13 @@ class SpectrumPage(QWidget):
             # this RTL-SDR tuner chip actually supports would otherwise
             # display 1766 MHz with no indication anything went wrong.
             if not (self._center.minimum() <= target_mhz <= self._center.maximum()):
-                self._status.setText(
+                self._band_warning_lbl.setText(
                     f"⚠ {target_mhz:.1f} MHz is outside this SDR's tunable range "
                     f"({self._center.minimum():.0f}-{self._center.maximum():.0f} MHz) — "
                     "showing the closest available frequency instead."
                 )
             else:
-                self._status.setText("")
+                self._band_warning_lbl.setText("")
             self._center.setValue(target_mhz)
         self._apply_markers()
 
