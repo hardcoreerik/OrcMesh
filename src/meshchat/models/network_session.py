@@ -8,7 +8,16 @@ from datetime import datetime, timezone
 
 @dataclass
 class NetworkSession:
-    """Represents one monitoring session (from connect to disconnect/reset)."""
+    """Represents one monitoring session.
+
+    A session starts when the app connects (or the user presses Start New
+    Session) and ends only on: an explicit End Session action, the app
+    exiting cleanly, a database reset, or an optional long-disconnect
+    policy — see the network-monitor spec (F:\\Ai\\MeshMonitor\\
+    CLAUDE_MESHCHAT_NETWORK_MONITOR_ADDENDUM.md, "session lifecycle").
+    A simple transport reconnect must NOT reset it — do not call `.end()`
+    or otherwise rotate `.id` from a disconnect/reconnect handler.
+    """
 
     transport: str
     connection_target: str
@@ -38,23 +47,10 @@ class NetworkSession:
         return f"{d}d {rem // 3600}h"
 
     def end(self) -> None:
+        """Explicitly end this session — call only from an actual session
+        boundary (End Session action, DB reset), never from a plain
+        connect/disconnect handler. See the class docstring."""
         self.ended_at = datetime.now(timezone.utc)
-
-    def start_new(self) -> None:
-        """Reinitialize in place for a fresh connect-to-disconnect run.
-
-        Mutates rather than replacing the object: PacketIngestor holds this
-        same NetworkSession instance and mutates it directly (packet_count
-        += 1, session_id stamped on packets/messages) — replacing the
-        reference here wouldn't be visible there without also threading a
-        setter through. Reconnecting without this call previously meant
-        every connect-to-disconnect run in one app session shared the same
-        session_id, since __init__ only creates the session once.
-        """
-        self.id = str(uuid.uuid4())
-        self.started_at = datetime.now(timezone.utc)
-        self.ended_at = None
-        self.packet_count = 0
 
     @classmethod
     def new(cls, transport: str = "unknown", connection_target: str = "") -> "NetworkSession":

@@ -139,6 +139,20 @@ in particular is deliberately lightweight to construct (only `node_num` is
 required) since it's synthesized in several places (live ingest, both
 seeding paths) with only partial data available at each site.
 
+**`NetworkSession` lifecycle — deliberately app-lifetime, not
+connection-lifetime.** One `NetworkSession` is constructed at `MainWindow`
+startup and lives until the app exits; a disconnect/reconnect does **not**
+get a new one. This isn't an oversight — the network-monitor spec is
+explicit that "a simple transport reconnect should not automatically reset
+a session," and only defines a session boundary at an explicit End Session
+action, clean app exit, a database reset, or an optional long-disconnect
+policy (none of which are implemented yet — until they are,
+`self._session` in `MainWindow` is the one and only session for the app's
+whole run). Do not add code that calls `.end()` or otherwise resets/rotates
+this session's `.id` from a plain connect/disconnect handler — it looks
+like an obvious bug fix (`session_id` staying constant across reconnects)
+but it's actually the documented, correct behavior.
+
 `services/monitor_store.py` is the SQLite persistence layer (schema in
 `database/schema.py`): nodes, positions, telemetry, packets, and chat
 messages. It's what makes the app "remember" across restarts — the map,
