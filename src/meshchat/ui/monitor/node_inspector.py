@@ -214,7 +214,17 @@ class NodeInspector(QWidget):
         self._noise.setText("N/A")
 
         self._hops_used.setText(str(snapshot.last_hops_used) if snapshot.last_hops_used is not None else "—")
-        if snapshot.last_hops_used is not None and snapshot.last_hop_start is not None:
+        if (
+            snapshot.last_hops_used is not None
+            and snapshot.last_hop_start is not None
+            and snapshot.last_hops_used <= snapshot.last_hop_start
+        ):
+            # hops_used > hop_start shouldn't happen for a well-formed
+            # packet, but nothing upstream of this display guarantees it (a
+            # malformed/out-of-order packet could still produce it) — this
+            # matches analytics/hop_metrics.compute_hops_used's convention
+            # of treating that case as unknown ("—"), not a fabricated 0,
+            # which would look like a real (if unlikely) measurement.
             left = snapshot.last_hop_start - snapshot.last_hops_used
             self._hops_left.setText(str(left))
         else:

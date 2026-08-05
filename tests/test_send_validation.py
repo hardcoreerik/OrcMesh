@@ -169,6 +169,18 @@ class TestSendFailure:
         w.send_channel_text("hi", 0, "local-1")
         assert statuses == [("local-1", 4242, MessageStatus.ACCEPTED_BY_RADIO)]
 
+    def test_missing_packet_id_reports_none_not_zero(self):
+        # `getattr(packet, "id", None) or 0` used to coerce a missing id to
+        # the literal 0 — chat_view.py and MonitorStore both treat None as
+        # "genuinely unknown, don't overwrite the real one", a sentinel 0
+        # would silently bypass.
+        w = _connected_worker()
+        w._interface.sendText = lambda **kwargs: type("Pkt", (), {})()  # no .id attribute
+        statuses = []
+        w.message_status_changed.connect(lambda lid, pid, st, detail: statuses.append((lid, pid, st)))
+        w.send_channel_text("hi", 0, "local-1")
+        assert statuses == [("local-1", None, MessageStatus.ACCEPTED_BY_RADIO)]
+
     def test_failed_send_reports_failed_status_with_the_local_id(self):
         w = _connected_worker()
 

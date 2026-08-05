@@ -94,6 +94,14 @@ class SpectrumPage(QWidget):
         self._marker_lbl.setStyleSheet("color: #00D4FF; font-size: 11px;")
         tb.addWidget(self._marker_lbl)
 
+        # Separate from self._status (SDR availability / capture-lifecycle
+        # messages) — a band change doesn't affect either of those, so
+        # writing to self._status here would silently stomp whatever
+        # capture-state message was already showing.
+        self._band_warning_lbl = QLabel("")
+        self._band_warning_lbl.setStyleSheet("color: #FFB800; font-size: 11px;")
+        tb.addWidget(self._band_warning_lbl)
+
         self._status = QLabel("")
         self._status.setStyleSheet("color: #5A6690; font-size: 11px;")
         tb.addWidget(self._status)
@@ -222,17 +230,34 @@ class SpectrumPage(QWidget):
         key = self._band.currentData()
         if not key:
             return
+        target_mhz: float | None = None
         if self._protocol.currentText() == "MeshCore":
             plan = MESHCORE_PLANS.get(key)
             if plan:
-                self._center.setValue(plan.freq_mhz)
+                target_mhz = plan.freq_mhz
         else:
             band = MESHTASTIC_REGIONS.get(key)
             if band:
                 # Centre on the active slot if we know it, else the band centre
                 markers = self._current_markers()
                 active = next((m for m in markers if "active" in m.label.lower()), None)
-                self._center.setValue(active.center_mhz if active else band.center_mhz)
+                target_mhz = active.center_mhz if active else band.center_mhz
+
+        if target_mhz is not None:
+            # QDoubleSpinBox.setValue() silently clamps to the configured
+            # range with no error — e.g. selecting the 2.4 GHz Meshtastic
+            # region (center ~2441.75 MHz) against the 24-1766 MHz range
+            # this RTL-SDR tuner chip actually supports would otherwise
+            # display 1766 MHz with no indication anything went wrong.
+            if not (self._center.minimum() <= target_mhz <= self._center.maximum()):
+                self._band_warning_lbl.setText(
+                    f"⚠ {target_mhz:.1f} MHz is outside this SDR's tunable range "
+                    f"({self._center.minimum():.0f}-{self._center.maximum():.0f} MHz) — "
+                    "showing the closest available frequency instead."
+                )
+            else:
+                self._band_warning_lbl.setText("")
+            self._center.setValue(target_mhz)
         self._apply_markers()
 
     def _on_start_stop(self) -> None:
