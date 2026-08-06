@@ -1,6 +1,15 @@
 """MeshChat – SQLite database schema."""
 from __future__ import annotations
 
+import logging
+import shutil
+import sqlite3
+from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
+
+log = logging.getLogger(__name__)
+
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -134,7 +143,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 """
 
-# Indexes that reference columns added by _migrate() — must run after
+# Indexes that reference columns added by migrations — must run after
 # migration, not inside SCHEMA_SQL, or CREATE INDEX fails on pre-migration DBs.
 _POST_MIGRATE_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_messages_channel_time
@@ -154,22 +163,34 @@ CREATE INDEX IF NOT EXISTS idx_messages_time
 """
 
 
-def apply_schema(conn) -> None:
-    """Apply the full schema to an existing SQLite connection."""
-    conn.executescript(SCHEMA_SQL)
-    _migrate(conn)
-    conn.executescript(_POST_MIGRATE_INDEXES)
-    conn.commit()
+class MigrationError(RuntimeError):
+    """Raised when a schema migration cannot be completed safely.
+
+    Callers should surface `str(exc)` to the user as-is — it already
+    explains what happened and, when a backup was taken, where to find it.
+    No migration in this module deletes or overwrites existing rows, only
+    adds columns, so raising here always leaves the database exactly as it
+    was before this attempt (the failing migration's own ALTER TABLE is
+    rolled back by its transaction).
+    """
 
 
-def _migrate(conn) -> None:
-    """Add columns to tables created by older versions of this schema."""
+def _migrate_v1_message_columns(conn: sqlite3.Connection) -> None:
+    """Add messages.text / messages.destination_num, absent from the
+    original release before direct-message support and inline text
+    storage. Idempotent: checked independently of user_version so a
+    partially-migrated or hand-edited DB still converges correctly."""
     cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
     if "text" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN text TEXT")
     if "destination_num" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN destination_num INTEGER")
 
+
+def _migrate_v2_node_stat_columns(conn: sqlite3.Connection) -> None:
+    """Add the nodes table's persisted signal/hop/transport-stat columns
+    (previously tracked only on the in-memory NodeSnapshot — see
+    MonitorStore._write_node). Idempotent for the same reason as v1."""
     node_cols = {row[1] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()}
     for col, decl in (
         ("last_snr", "REAL"),
@@ -184,3 +205,101 @@ def _migrate(conn) -> None:
     ):
         if col not in node_cols:
             conn.execute(f"ALTER TABLE nodes ADD COLUMN {col} {decl}")
+
+
+#: Sequential, idempotent migrations, each tagged with the schema version it
+#: brings the database to. A brand-new database created from SCHEMA_SQL
+#: already has every column these add, so PRAGMA user_version is set to
+#: CURRENT_SCHEMA_VERSION immediately on first open without actually running
+#: any of them (see _run_migrations). Add new migrations by appending here —
+#: never renumber or remove an existing entry, or a database already
+#: stamped with that version number will silently skip it.
+_MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+    (1, _migrate_v1_message_columns),
+    (2, _migrate_v2_node_stat_columns),
+]
+
+CURRENT_SCHEMA_VERSION = _MIGRATIONS[-1][0]
+
+
+def apply_schema(conn: sqlite3.Connection, db_path: Path | None = None) -> None:
+    """Apply the full schema to an existing SQLite connection, running any
+    migrations the database still needs to reach CURRENT_SCHEMA_VERSION.
+
+    `db_path` enables the pre-migration backup (see _run_migrations) — pass
+    it whenever `conn` is backed by a real file. Safe to omit for in-memory
+    or throwaway connections, which have nothing worth backing up.
+    """
+    # Checked before executescript creates the schema: a brand-new database
+    # has nothing worth backing up, and would otherwise get a pointless
+    # empty-schema "backup" on every fresh install (its user_version also
+    # starts at 0, indistinguishable from a genuinely old pre-migration DB,
+    # so that check alone can't tell the two apart).
+    is_new_database = db_path is None or not db_path.exists() or db_path.stat().st_size == 0
+
+    conn.executescript(SCHEMA_SQL)
+    _run_migrations(conn, None if is_new_database else db_path)
+    conn.executescript(_POST_MIGRATE_INDEXES)
+    conn.commit()
+
+
+def _backup_before_migration(conn: sqlite3.Connection, db_path: Path, from_version: int) -> Path | None:
+    """Copy the database file to a timestamped backup before a migration
+    touches it. Returns the backup path, or None if there was nothing to
+    back up (a brand-new/empty database) or the backup itself failed.
+
+    A failed backup does not block the migration — see the caller — but is
+    always logged, since it changes what recovery looks like if the
+    migration itself then fails.
+    """
+    try:
+        if not db_path.exists() or db_path.stat().st_size == 0:
+            return None
+        # WAL mode means committed data can still be sitting in the -wal
+        # file rather than the main database file; checkpoint first so the
+        # copy actually contains everything.
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        backup_dir = db_path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"{db_path.stem}.schema-v{from_version}.{stamp}{db_path.suffix}"
+        shutil.copy2(db_path, backup_path)
+        log.info("Backed up database (schema v%d) to %s before migration", from_version, backup_path)
+        return backup_path
+    except Exception as exc:
+        log.error("Pre-migration backup failed (continuing without one): %s", exc)
+        return None
+
+
+def _run_migrations(conn: sqlite3.Connection, db_path: Path | None) -> None:
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    pending = [(version, fn) for version, fn in _MIGRATIONS if version > current]
+    if not pending:
+        return
+
+    backup_path: Path | None = None
+    if db_path is not None:
+        backup_path = _backup_before_migration(conn, db_path, current)
+    backup_note = f" A pre-migration backup was saved to {backup_path}." if backup_path else ""
+
+    for version, migrate_fn in pending:
+        try:
+            with conn:
+                migrate_fn(conn)
+                # PRAGMA user_version writes the database header page like
+                # any other write in the current transaction, so it commits
+                # or rolls back together with this migration's ALTER TABLEs
+                # — never left pointing past a migration that didn't apply.
+                conn.execute(f"PRAGMA user_version = {version}")
+        except Exception as exc:
+            raise MigrationError(
+                f"Database migration to schema version {version} failed: {exc}. "
+                f"Your existing data has not been modified.{backup_note}"
+            ) from exc
+
+    integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    if integrity != "ok":
+        raise MigrationError(
+            f"Database integrity check failed after migration: {integrity}."
+            f"{backup_note} If you have a backup, restore it and report this issue."
+        )
