@@ -415,6 +415,15 @@ class MeshtasticWorker(QObject):
     def _on_connection_lost(self, interface=None, topics=None) -> None:
         if not self._is_active_interface(interface):
             return
+        # meshtastic.connection.lost is published from the meshtastic
+        # library's own background reader thread, not this worker's thread —
+        # a reconnect can replace self._interface between the check above
+        # and here. Re-check identity right before acting so a stale loss
+        # event for an interface that's already been superseded reports
+        # nothing and, critically, _close_interface below can't tear down
+        # the replacement connection.
+        if self._interface is not interface:
+            return
         self._set_state(ConnectionState.ERROR, "Connection lost")
         # Every other path that ends a connection (disconnect(), a failed
         # (re)connect attempt) calls this — this one didn't, leaving the
@@ -422,7 +431,10 @@ class MeshtasticWorker(QObject):
         # alive and leaking until the user happened to click Connect or
         # Disconnect again. close() is wrapped in try/except internally,
         # so calling it on an interface that's already failing is safe.
-        self._close_interface()
+        # `expected=interface` makes the close itself identity-safe too,
+        # in case a reconnect lands in the tiny window right after the
+        # re-check above.
+        self._close_interface(expected=interface)
         self.disconnected.emit("Radio connection lost")
         self._emit_error(
             ErrorCode.CONNECTION_LOST,
@@ -891,7 +903,13 @@ class MeshtasticWorker(QObject):
     # Internal helpers
     # -----------------------------------------------------------------------
 
-    def _close_interface(self) -> None:
+    def _close_interface(self, expected: object | None = None) -> None:
+        # `expected`, when given, makes this identity-safe: only close and
+        # clear self._interface if it's still the object the caller checked
+        # against, not whatever got installed in between (see
+        # _on_connection_lost).
+        if expected is not None and self._interface is not expected:
+            return
         iface = self._interface
         self._interface = None
         if iface is not None:

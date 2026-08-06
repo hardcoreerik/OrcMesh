@@ -244,3 +244,33 @@ class TestConnectionLost:
         assert fakes[0]._closed, "Interface was not closed on connection.lost"
         assert ctrl._worker._interface is None
         ctrl.shutdown()
+
+    def test_stale_connection_lost_does_not_close_a_replacement_interface(self):
+        # meshtastic.connection.lost is published on the meshtastic library's
+        # own background thread, not this worker's thread, so a reconnect
+        # can replace self._interface between _on_connection_lost's initial
+        # identity check and the point where it acts. Simulate that
+        # interleaving deterministically by having the reconnect land during
+        # _set_state — which runs between the initial check and the
+        # re-check/close this fix added — rather than relying on real
+        # thread timing.
+        from meshchat.controllers.meshtastic_controller import MeshtasticWorker
+        from tests.fakes.fake_meshtastic_interface import FakeMeshtasticInterface
+
+        worker = MeshtasticWorker()
+        old_iface = FakeMeshtasticInterface()
+        new_iface = FakeMeshtasticInterface()
+        worker._interface = old_iface
+
+        orig_set_state = worker._set_state
+
+        def _set_state_and_swap(*args, **kwargs):
+            worker._interface = new_iface  # reconnect lands mid-callback
+            return orig_set_state(*args, **kwargs)
+
+        worker._set_state = _set_state_and_swap
+        worker._on_connection_lost(interface=old_iface)
+
+        assert not new_iface._closed, "Replacement interface must not be closed"
+        assert not old_iface._closed, "Stale event is a no-op after the swap, not a close"
+        assert worker._interface is new_iface
