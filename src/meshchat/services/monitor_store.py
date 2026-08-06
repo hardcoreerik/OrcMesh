@@ -338,8 +338,18 @@ class MonitorStore:
                 log.error("MonitorStore prune failed: %s", exc)
 
     def _write_packet(self, conn: sqlite3.Connection, pkt: NetworkPacket) -> None:
+        # Plain INSERT, not "OR IGNORE": the packets table's only key is its
+        # auto-incrementing rowid (see database/schema.py — no UNIQUE
+        # constraint on any other column), which is always new, so "OR
+        # IGNORE" could never actually trigger a conflict here — it looked
+        # like a DB-level dedup safety net but was a no-op. Real dedup
+        # already happens upstream, in-memory, in
+        # PacketIngestor._is_duplicate() before a packet ever reaches this
+        # method; adding a genuine UNIQUE constraint here would risk
+        # silently rejecting legitimate packets if the composite key isn't
+        # chosen exactly right, which is worse than the status quo.
         conn.execute(
-            """INSERT OR IGNORE INTO packets
+            """INSERT INTO packets
             (session_id, observed_at, rx_time, sender_num, sender_id,
              destination_num, packet_id, channel_index, portnum, portnum_name,
              payload_size, rx_snr, rx_rssi, hop_start, hop_limit, hops_used,
