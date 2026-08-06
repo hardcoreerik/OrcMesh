@@ -62,7 +62,7 @@ class MonitorStore:
         # callers may read (e.g. chat history) immediately after construction,
         # before the writer thread below would otherwise get around to it.
         conn = sqlite3.connect(str(self._path), check_same_thread=False)
-        apply_schema(conn)
+        apply_schema(conn, self._path)
         conn.close()
 
         self._write_q: queue.Queue[Any] = queue.Queue(maxsize=10_000)
@@ -336,7 +336,7 @@ class MonitorStore:
         try:
             conn = sqlite3.connect(str(self._path), check_same_thread=True)
             conn.row_factory = sqlite3.Row
-            apply_schema(conn)
+            apply_schema(conn, self._path)
             batch: list[Any] = []
             while not self._stop.is_set() or not self._write_q.empty():
                 try:
