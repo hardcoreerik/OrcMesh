@@ -35,32 +35,27 @@ actually shipped when.
   `@Slot("qlonglong")`/`Q_ARG("qlonglong", ...)` for the few places that
   actually cross a real C++ boundary (the QWebChannel bridge in `ui/map/`,
   and the queued cross-thread calls into `MeshtasticWorker`).
-- **PubSub callbacks run on the `meshtastic` library's own background
-  thread, not `MeshtasticWorker`'s `QThread`.** `MeshtasticWorker`'s own
-  slots (`connect_ble`, `connect_tcp`, `disconnect`, ...) all run
-  sequentially on its one `QThread`, so they never race each other — but a
-  PubSub callback like `_on_connection_lost` can fire concurrently with one
-  of those slots, both touching `self._interface`. A plain "check identity,
-  then act" in a callback has a window where a reconnect installs a
-  replacement interface between the check and the act, so the callback
-  ends up tearing down or misreporting the *new* connection instead of the
-  dead one the event was actually about. `_claim_interface_if()` closes
-  that window: it's a lock-guarded compare-and-clear, so a callback only
-  ever acts on the exact interface it captured, never a replacement. If you
-  add another PubSub callback that mutates connection state based on an
-  identity check, route it through `_claim_interface_if()`
-  (or at minimum `self._interface_lock`), not a bare `is`/`is not` check.
-  Claiming is not the whole story if the callback does slow work (I/O)
-  after claiming, before touching state/signals: `_claim_interface_if()`
-  also returns a `_connect_generation` snapshot — a counter bumped inside
-  `_close_interface()` on every connect attempt's initial teardown and on
-  disconnect()/shutdown(), even when there was nothing to close. Re-compare
-  `self._connect_generation` against that snapshot immediately before any
-  state/signal side effect that follows slow work, the way
-  `_on_connection_lost` does after `interface.close()`. A plain
-  `self._interface is not None` check is not equivalent — it misses the
-  window where a reconnect's teardown has already run but its new
-  interface's constructor hasn't returned yet.
+- **`_on_connection_lost` must never close or clear `self._interface`.**
+  This looks like an obvious leak fix (mirror every other path that ends a
+  connection by calling `_close_interface()`) — it was tried, and reverted,
+  because `meshtastic.connection.lost` is not only fired for a real,
+  permanent disconnect. The `meshtastic` library also fires it, for the
+  *exact same live interface object*, on a routine post-config-change soft
+  reboot: `MeshInterface._handleFromRadio` calls the *base*
+  `MeshInterface._disconnected()` directly — deliberately bypassing the
+  `BLEInterface`/`StreamInterface` subclass override that closes the
+  transport — then immediately calls `_startConfig()` to resync on that
+  same interface, which fires `meshtastic.connection.established` again
+  once it completes. There is no way to distinguish that case from a real
+  disconnect using only the event's `interface` argument — both hand back
+  the same live object. Closing it here would tear down a connection
+  that's still alive and about to recover; clearing `self._interface`
+  would additionally break the recovery itself, since the later
+  `connection.established` event's `_is_active_interface` check would then
+  fail. For an actual disconnect, the library's own
+  `BLEInterface`/`StreamInterface._disconnected()` override has already
+  closed the transport before this event fires — there is nothing left for
+  `MeshtasticWorker` to close.
 
 ## Packet flow (the spine of the app)
 
