@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import platformdirs
-from PySide6.QtCore import Qt, QSettings, QTimer
+from PySide6.QtCore import QObject, Qt, QSettings, QThread, QTimer, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,6 +42,42 @@ _LOG_DIR = Path(platformdirs.user_data_dir("MeshChat", appauthor=False)) / "logs
 _SETTINGS_KEY = "MeshChat/MainWindow"
 
 
+# ── Packet export worker ──────────────────────────────────────────────────
+# A full-session export can be up to read_packets_as_objects()'s 200,000-row
+# cap — CSV-formatting and writing that many rows is real, unbounded disk
+# I/O that would otherwise block the GUI thread (input, repaints) for as
+# long as it takes. Runs on its own QThread; the row list itself was
+# already gathered on the GUI thread (a single bounded SQLite read, fast
+# enough not to need its own worker) before this is started.
+
+class _PacketExportWorker(QObject):
+    finished = Signal(int)   # rows written
+    failed = Signal(str)     # error message
+
+    def __init__(self, rows, path: Path, include_text: bool, parent=None):
+        super().__init__(parent)
+        self._rows = rows
+        self._path = path
+        self._include_text = include_text
+
+    def run(self) -> None:
+        from meshchat.services.export_service import ExportService
+        try:
+            count = ExportService.export_packets_csv(
+                self._rows, self._path, include_text=self._include_text,
+            )
+            self.finished.emit(count)
+        except Exception as exc:
+            # Not narrowed to OSError: any uncaught exception here would
+            # otherwise leave this slot without ever emitting finished/
+            # failed, so the caller's thread.quit() (only wired to those
+            # two signals) never runs — the worker thread's event loop
+            # stays up forever and the Export menu action stays disabled
+            # for the rest of the session.
+            log.exception("Packet export worker failed")
+            self.failed.emit(str(exc))
+
+
 # ── Nav rail button ────────────────────────────────────────────────────────
 
 class _NavButton(QPushButton):
@@ -66,6 +102,8 @@ class MainWindow(QMainWindow):
         self._session = NetworkSession.new()
         self._store = MonitorStore()
         self._ingestor = PacketIngestor(self._session, self._store)
+        self._export_thread: QThread | None = None
+        self._export_worker: _PacketExportWorker | None = None
 
         # ── Central layout ────────────────────────────────────────────
         central = QWidget()
@@ -238,9 +276,9 @@ class MainWindow(QMainWindow):
 
         file_menu = menu_bar.addMenu("File")
 
-        export_pkts_act = QAction("Export Packet Log to CSV…", self)
-        export_pkts_act.triggered.connect(self._export_packets)
-        file_menu.addAction(export_pkts_act)
+        self._export_pkts_act = QAction("Export Packet Log to CSV…", self)
+        self._export_pkts_act.triggered.connect(self._export_packets)
+        file_menu.addAction(self._export_pkts_act)
 
         export_nodes_act = QAction("Export Nodes to CSV…", self)
         export_nodes_act.triggered.connect(self._export_nodes)
@@ -284,12 +322,50 @@ class MainWindow(QMainWindow):
         self._store.prune_async()
 
     def _export_packets(self) -> None:
-        from meshchat.services.export_service import ExportService
+        if self._export_thread is not None:
+            self._status_bar.showMessage("A packet export is already in progress", 5000)
+            return
 
-        rows = self._ingestor.get_recent_packets()
+        # PacketIngestor.get_recent_packets() is a bounded 10,000-packet
+        # in-memory ring buffer — everything still in it is authoritative
+        # (it's the exact same data ChatView/rankings use, complete and
+        # with text) and always included as-is. MonitorStore only fills in
+        # whatever fell out of that buffer on a long/busy session: every
+        # ingested packet is durably written to the packets table, but that
+        # write is asynchronous and the table has no text column at all
+        # (message content lives in `messages`), so store rows are only
+        # used for packets NOT already covered by the in-memory set —
+        # never to replace or race against it.
+        recent = self._ingestor.get_recent_packets()
+        recent_keys = {(p.sender_num, p.packet_id, p.observed_at) for p in recent}
+        store_rows = self._store.read_packets_as_objects(self._session.id)
+        older = [p for p in store_rows if (p.sender_num, p.packet_id, p.observed_at) not in recent_keys]
+        # read_packets_as_objects() returns newest-first, get_recent_packets()
+        # returns insertion order — without this the merged CSV would have a
+        # reverse-chronological historical section followed by a
+        # chronological recent one.
+        rows = sorted(older + recent, key=lambda pkt: pkt.observed_at)
+
         if not rows:
             self._status_bar.showMessage("Nothing to export — no packets captured yet", 5000)
             return
+
+        # read_packets_as_objects() caps at 200,000 rows — warn rather than
+        # silently truncate on the rare session that exceeds it, instead of
+        # exporting a file that looks complete but isn't.
+        total = self._store.packet_count(self._session.id)
+        if total > len(rows):
+            proceed = QMessageBox.question(
+                self,
+                "Partial Export",
+                f"This session has captured {total} packets, more than this export "
+                f"can include at once ({len(rows)} available) — the earliest packets "
+                "will be missing.\n\nExport the available packets anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if proceed != QMessageBox.StandardButton.Yes:
+                return
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Export Packet Log", "meshchat-packets.csv", "CSV files (*.csv)"
@@ -303,17 +379,57 @@ class MainWindow(QMainWindow):
             self,
             "Include message text?",
             "Include the text of received messages in the export?\n\n"
-            "Message content is personal — leave this out if you plan to share the file.",
+            "Message content is personal — leave this out if you plan to share the file.\n\n"
+            "Text is only filled in for packets still held in this session's "
+            "in-memory buffer (the most recent ~10,000) — older rows in this "
+            "export will have it blank.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         ) == QMessageBox.StandardButton.Yes
 
-        try:
-            count = ExportService.export_packets_csv(rows, Path(path), include_text=include_text)
-            self._status_bar.showMessage(f"Exported {count} packet(s) to {path}", 8000)
-        except OSError as exc:
-            log.exception("Packet export failed")
-            QMessageBox.warning(self, "Export Failed", f"Could not write the file:\n{exc}")
+        # CSV-formatting and writing up to 200,000 rows is real, unbounded
+        # disk I/O — done on a background QThread so it can't freeze the
+        # GUI (input, repaints) for as long as it takes on a large session.
+        # Not parented to `self`/MainWindow: run() is a blocking write, so
+        # if the window closes before it finishes, closeEvent must be able
+        # to wait it out without this thread being a child object Qt might
+        # try to tear down mid-run.
+        self._status_bar.showMessage(f"Exporting {len(rows)} packet(s)…")
+        self._export_pkts_act.setEnabled(False)
+        self._export_thread = QThread()
+        self._export_worker = _PacketExportWorker(rows, Path(path), include_text)
+        self._export_worker.moveToThread(self._export_thread)
+        self._export_thread.started.connect(self._export_worker.run)
+        self._export_worker.finished.connect(self._on_packet_export_finished)
+        self._export_worker.failed.connect(self._on_packet_export_failed)
+        self._export_worker.finished.connect(self._export_thread.quit)
+        self._export_worker.failed.connect(self._export_thread.quit)
+        # deleteLater from the object's OWN thread while its event loop is
+        # still running it (worker: still on _export_thread when finished/
+        # failed fires; thread: on the GUI thread when its `finished` fires)
+        # — not from _on_packet_export_thread_finished after the fact, which
+        # runs after the worker's thread affinity/event loop is already gone.
+        self._export_worker.finished.connect(self._export_worker.deleteLater)
+        self._export_worker.failed.connect(self._export_worker.deleteLater)
+        self._export_thread.finished.connect(self._export_thread.deleteLater)
+        self._export_thread.finished.connect(self._on_packet_export_thread_finished)
+        self._export_thread.start()
+
+    def _on_packet_export_finished(self, count: int) -> None:
+        self._status_bar.showMessage(f"Exported {count} packet(s)", 8000)
+
+    def _on_packet_export_failed(self, message: str) -> None:
+        log.error("Packet export failed: %s", message)
+        QMessageBox.warning(self, "Export Failed", f"Could not write the file:\n{message}")
+
+    def _on_packet_export_thread_finished(self) -> None:
+        # Runs after both finished/failed have already updated the status
+        # bar — this only clears the tracking references and re-enables the
+        # menu action, regardless of which outcome occurred. deleteLater
+        # for both objects is already wired above; don't call it again here.
+        self._export_worker = None
+        self._export_thread = None
+        self._export_pkts_act.setEnabled(True)
 
     def _export_nodes(self) -> None:
         from meshchat.services.export_service import ExportService
@@ -614,4 +730,24 @@ class MainWindow(QMainWindow):
         self._spectrum_page.shutdown()
         self._controller.shutdown()
         self._store.shutdown()
+        if self._export_thread is not None:
+            # Closing mid-export: block until the write actually finishes
+            # rather than destroying a still-running QThread out from under
+            # it, which Qt warns about and can crash on some platforms.
+            #
+            # The explicit quit() here is required, not redundant with the
+            # worker's finished/failed -> thread.quit connections: those are
+            # QUEUED (the QThread object lives on this GUI thread, the
+            # worker emits from _export_thread), so they only get delivered
+            # once THIS thread's event loop is pumping — which it isn't
+            # while blocked in wait() below. Without this direct call, a
+            # write that finishes during that wait() would leave the
+            # worker thread parked in exec() forever with nothing left to
+            # ever tell it to quit, hanging app shutdown indefinitely.
+            # quit() itself does not interrupt the blocking write in
+            # progress — only ensures the thread doesn't idle in its event
+            # loop once that write actually returns — so this still waits
+            # as long as the write itself takes.
+            self._export_thread.quit()
+            self._export_thread.wait()
         super().closeEvent(event)

@@ -63,7 +63,13 @@ class ExportService:
                     "hop_start":          pkt.hop_start if pkt.hop_start is not None else "",
                     "hop_limit":          pkt.hop_limit if pkt.hop_limit is not None else "",
                     "hops_used":          pkt.hops_used if pkt.hops_used is not None else "",
-                    "via_mqtt":           int(bool(pkt.via_mqtt)),
+                    # is-not-None here too: via_mqtt is bool | None on older
+                    # firmware that never reports the field at all, and
+                    # `int(bool(None))` == 0 was indistinguishable from a
+                    # packet confirmed to be direct RF — silently collapsing
+                    # "unknown" into "confirmed not MQTT" for anyone doing
+                    # offline RF-vs-MQTT analysis of the export.
+                    "via_mqtt":           int(pkt.via_mqtt) if pkt.via_mqtt is not None else "",
                     "transport_mechanism": pkt.transport_mechanism or "",
                 }
                 if include_text:

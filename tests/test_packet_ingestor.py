@@ -214,6 +214,20 @@ class TestNodeSnapshot:
         assert ing.get_node(444444).via_mqtt_count == 1
         assert ing.get_node(444444).rf_count == 0
 
+    def test_unknown_transport_increments_neither_counter(self):
+        # via_mqtt absent entirely (older firmware that never reports it)
+        # must not be misclassified as confirmed RF — `pkt.is_via_mqtt`
+        # coerces None to False via bool(), which used to do exactly that.
+        # These counters now persist across restarts, so a wrong count
+        # here would keep compounding every session.
+        ing = _make_ingestor()
+        pkt = dict(_FIXTURES["direct_text"])
+        del pkt["viaMqtt"]
+        ing.ingest_raw(pkt)
+        node = ing.get_node(111111)
+        assert node.rf_count == 0
+        assert node.via_mqtt_count == 0
+
     def test_node_last_via_mqtt_tracks_the_most_recent_packet(self):
         # Feeds NodeSnapshot.is_direct's via_mqtt check — a node's cumulative
         # via_mqtt_count/rf_count can't tell you whether the MOST RECENT
@@ -246,6 +260,61 @@ class TestNodeSnapshot:
     def test_get_node_returns_none_for_unknown(self):
         ing = _make_ingestor()
         assert ing.get_node(0xDEAD_BEEF) is None
+
+
+# ── Seeding from persisted history ─────────────────────────────────────────────
+
+class TestSeedFromStore:
+    """seed_from_store() restores nodes from MonitorStore rows at startup.
+    last_snr/last_rssi/last_hops_used/last_hop_start/last_via_mqtt and the
+    rf_count/via_mqtt_count/position_count/telemetry_count counters used to
+    have no DB column at all, so they never made it into these rows and a
+    long-tracked node started every restart with them reset."""
+
+    def test_signal_hop_and_counter_fields_are_restored(self):
+        ing = _make_ingestor()
+        ing.seed_from_store(
+            node_rows=[{
+                "node_num": 1, "node_id": "!00000001",
+                "last_snr": 8.25, "last_rssi": -72,
+                "last_hops_used": 0, "last_hop_start": 3, "last_via_mqtt": 0,
+                "rf_count": 4, "via_mqtt_count": 1,
+                "position_count": 2, "telemetry_count": 1,
+            }],
+            positions_by_num={},
+        )
+        node = ing.get_node(1)
+        assert node.last_snr == 8.25
+        assert node.last_rssi == -72
+        assert node.last_hops_used == 0
+        assert node.last_hop_start == 3
+        assert node.last_via_mqtt is False
+        assert node.rf_count == 4
+        assert node.via_mqtt_count == 1
+        assert node.position_count == 2
+        assert node.telemetry_count == 1
+
+    def test_missing_last_via_mqtt_stays_none_not_false(self):
+        # A row with the column present but NULL (never observed) must not
+        # be conflated with an explicit False (confirmed direct RF).
+        ing = _make_ingestor()
+        ing.seed_from_store(
+            node_rows=[{"node_num": 2, "last_via_mqtt": None}],
+            positions_by_num={},
+        )
+        assert ing.get_node(2).last_via_mqtt is None
+
+    def test_live_packet_before_seeding_is_not_overwritten(self):
+        # A node already heard live this session must keep its live data —
+        # seeding is startup-only backfill, not an authoritative overwrite.
+        ing = _make_ingestor()
+        ing.ingest_raw(_FIXTURES["direct_text"])  # creates node 111111
+        live_snr = ing.get_node(111111).last_snr
+        ing.seed_from_store(
+            node_rows=[{"node_num": 111111, "last_snr": -99.0}],
+            positions_by_num={},
+        )
+        assert ing.get_node(111111).last_snr == live_snr
 
 
 # ── Signals emitted ───────────────────────────────────────────────────────────

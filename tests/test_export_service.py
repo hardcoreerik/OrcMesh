@@ -85,3 +85,20 @@ class TestZeroValuesSurviveExport:
         assert row["packet_id"] == ""
         assert row["portnum"] == ""
         assert row["payload_size"] == ""
+
+
+class TestViaMqttTriState:
+    def test_via_mqtt_false_exports_as_zero(self, tmp_path):
+        row = _export_and_read_row(tmp_path, _pkt(via_mqtt=False))
+        assert row["via_mqtt"] == "0"
+
+    def test_via_mqtt_true_exports_as_one(self, tmp_path):
+        row = _export_and_read_row(tmp_path, _pkt(via_mqtt=True))
+        assert row["via_mqtt"] == "1"
+
+    def test_via_mqtt_unknown_exports_as_empty_not_zero(self, tmp_path):
+        # via_mqtt is bool | None — older firmware never reports it at all.
+        # int(bool(None)) == 0 used to collapse that into "confirmed not
+        # MQTT", indistinguishable from a real False.
+        row = _export_and_read_row(tmp_path, _pkt(via_mqtt=None))
+        assert row["via_mqtt"] == ""

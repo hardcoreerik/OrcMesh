@@ -349,9 +349,15 @@ class PacketIngestor(QObject):
             node.last_hop_start = pkt.hop_start
             node.last_via_mqtt = pkt.via_mqtt
 
-            if pkt.is_via_mqtt:
+            # Tri-state, not pkt.is_via_mqtt (bool(via_mqtt), which coerces
+            # None to False): older firmware that never reports viaMqtt at
+            # all must not be counted as confirmed RF — these counters now
+            # persist across restarts (see MonitorStore._write_node /
+            # PacketIngestor.seed_from_store), so misclassifying "unknown"
+            # as "confirmed RF" here would keep compounding every session.
+            if pkt.via_mqtt is True:
                 node.via_mqtt_count += 1
-            else:
+            elif pkt.via_mqtt is False:
                 node.rf_count += 1
 
             if pkt.portnum == PORTNUM_TEXT:
@@ -635,6 +641,28 @@ class PacketIngestor(QObject):
                 node.last_heard = node.last_heard or _parse_dt(row.get("last_heard"))
                 node.packet_count = max(node.packet_count, row.get("packet_count") or 0)
                 node.text_count = max(node.text_count, row.get("text_count") or 0)
+                node.rf_count = max(node.rf_count, row.get("rf_count") or 0)
+                node.via_mqtt_count = max(node.via_mqtt_count, row.get("via_mqtt_count") or 0)
+                node.position_count = max(node.position_count, row.get("position_count") or 0)
+                node.telemetry_count = max(node.telemetry_count, row.get("telemetry_count") or 0)
+                # Only restore the "last observation" fields if this node
+                # hasn't already been heard live this session — a fresh live
+                # packet is always newer than whatever was persisted before
+                # this app run started, and seed_from_store only fills in
+                # nodes not yet touched this session anyway (see the
+                # `node is None` branch above), but a defensive guard here
+                # keeps that true even if seeding order ever changes.
+                if node.last_snr is None:
+                    node.last_snr = row.get("last_snr")
+                if node.last_rssi is None:
+                    node.last_rssi = row.get("last_rssi")
+                if node.last_hops_used is None:
+                    node.last_hops_used = row.get("last_hops_used")
+                if node.last_hop_start is None:
+                    node.last_hop_start = row.get("last_hop_start")
+                if node.last_via_mqtt is None:
+                    raw_via_mqtt = row.get("last_via_mqtt")
+                    node.last_via_mqtt = bool(raw_via_mqtt) if raw_via_mqtt is not None else None
                 snap = _copy_node_snapshot(node)
 
             self.node_updated.emit(snap)
