@@ -199,6 +199,13 @@ class MainWindow(QMainWindow):
         self._is_connected = False
         self._local_node_num: int | None = None
 
+        # Coalesces Nodes-table/DM-sidebar rebuilds from node_updated —
+        # see _on_node_snapshot.
+        self._nodes_dirty = False
+        self._node_refresh_timer = QTimer(self)
+        self._node_refresh_timer.timeout.connect(self._flush_node_updates)
+        self._node_refresh_timer.start(2000)
+
         # Populate the map/node list from persisted history immediately, even
         # before connecting this session — matches the official Meshtastic
         # app always showing its saved NodeDB rather than starting blank.
@@ -540,7 +547,20 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(detail, 6000)
 
     def _on_node_snapshot(self, snapshot) -> None:
+        # node_updated fires on every ingested packet (see ARCHITECTURE.md),
+        # so on a busy mesh this can be many times a second. MonitorPage
+        # already coalesces its own repaint behind a periodic timer
+        # (on_node_updated just stores the dict entry); do the same here
+        # instead of rebuilding the whole Nodes table (a full model reset,
+        # clearing/reapplying selection) and the DM sidebar synchronously
+        # per packet.
         self._monitor_page.on_node_updated(snapshot)
+        self._nodes_dirty = True
+
+    def _flush_node_updates(self) -> None:
+        if not self._nodes_dirty:
+            return
+        self._nodes_dirty = False
         nodes_list = self._ingestor.get_nodes()
         nodes_dict = {n.node_num: n for n in nodes_list}
         self._nodes_page.update_nodes(nodes_dict)

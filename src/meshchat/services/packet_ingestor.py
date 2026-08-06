@@ -51,6 +51,7 @@ def _copy_node_snapshot(node: NodeSnapshot) -> NodeSnapshot:
         last_rssi=node.last_rssi,
         last_hops_used=node.last_hops_used,
         last_hop_start=node.last_hop_start,
+        last_via_mqtt=node.last_via_mqtt,
         via_mqtt_count=node.via_mqtt_count,
         rf_count=node.rf_count,
         last_telemetry_at=node.last_telemetry_at,
@@ -346,6 +347,7 @@ class PacketIngestor(QObject):
             node.last_rssi = pkt.rx_rssi
             node.last_hops_used = pkt.hops_used
             node.last_hop_start = pkt.hop_start
+            node.last_via_mqtt = pkt.via_mqtt
 
             if pkt.is_via_mqtt:
                 node.via_mqtt_count += 1
@@ -521,23 +523,6 @@ class PacketIngestor(QObject):
     def get_recent_packets(self) -> list[NetworkPacket]:
         with self._recent_lock:
             return list(self._recent_packets)
-
-    def update_node_from_db(self, node_num: int, nodes_by_num: dict) -> None:
-        """Merge NodeDB data into the in-memory snapshot."""
-        if node_num not in nodes_by_num:
-            return
-        node_data = nodes_by_num[node_num]
-        user = node_data.get("user", {}) or {}
-        with self._nodes_lock:
-            node = self._nodes.get(node_num)
-            if node is None:
-                node = NodeSnapshot(node_num=node_num)
-                self._nodes[node_num] = node
-            node.node_id = user.get("id") or node.node_id
-            node.long_name = user.get("longName") or node.long_name
-            node.short_name = user.get("shortName") or node.short_name
-            node.role = user.get("role") or node.role
-            node.hw_model = user.get("hwModel") or node.hw_model
 
     def seed_from_nodedb(self, raw_nodes: list[dict]) -> None:
         """

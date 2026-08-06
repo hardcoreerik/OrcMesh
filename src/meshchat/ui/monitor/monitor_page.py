@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from meshchat.analytics.packet_classifier import PORTNUM_TEXT
+from meshchat.analytics.packet_classifier import PORTNUM_TEXT, packet_category
 from meshchat.utils.time_format import format_elapsed, relative_age
 from meshchat.controllers.meshtastic_controller import ConnectionState
 from meshchat.models.network_packet import NetworkPacket
@@ -32,6 +33,20 @@ from meshchat.ui.monitor.rankings_panel import RankingsPanel
 from meshchat.ui.map.map_widget import MapWidget
 
 log = logging.getLogger(__name__)
+
+
+def _matches_packet_type(pkt: NetworkPacket, type_filter: str) -> bool:
+    """True if `pkt` belongs to the FilterBar `type_filter` category.
+
+    Delegates to analytics.packet_classifier.packet_category() rather than
+    re-deriving a portnum mapping, so this can't drift from
+    DistributionPanel's PacketBreakdownPanel — both bucket "Unknown Port"
+    and "Encrypted/Undecoded" into the one "Unknown/Encrypted" option/row.
+    """
+    category = packet_category(pkt.portnum, pkt.pki_encrypted)
+    if type_filter == "Unknown/Encrypted":
+        return category in ("Unknown Port", "Encrypted/Undecoded")
+    return category == type_filter
 
 
 class MonitorPage(QWidget):
@@ -286,11 +301,34 @@ class MonitorPage(QWidget):
         from meshchat.analytics.distance import haversine_km, format_distance
 
         nodes = list(self._nodes.values())
-        pkts = self._recent_packets
+        pkts: Sequence[NetworkPacket] = self._recent_packets
         now = datetime.now(timezone.utc)
         _ROW_LIMIT = 50
 
         age_s = self._active_filter.get("age_s")
+        source_filter = self._active_filter.get("source", "All observed")
+        type_filter = self._active_filter.get("portnum", "All")
+
+        # Age scopes both packet- and node-derived views to the same window
+        # (the "Active" card below then naturally reflects it too, since
+        # it's counting from this same filtered `nodes` list). Source/type
+        # only make sense per-packet, so they narrow `pkts` alone — node
+        # views (Last Heard, role/hardware distribution, node counts) have
+        # no single "source"/"type" of their own to filter by.
+        if age_s is not None:
+            cutoff = now - timedelta(seconds=age_s)
+            nodes = [n for n in nodes if n.last_heard is not None and n.last_heard >= cutoff]
+            pkts = [p for p in pkts if p.observed_at >= cutoff]
+
+        if source_filter == "RF only":
+            pkts = [p for p in pkts if p.via_mqtt is False]
+        elif source_filter == "MQTT-path":
+            pkts = [p for p in pkts if p.via_mqtt is True]
+        elif source_filter == "Unknown transport":
+            pkts = [p for p in pkts if p.via_mqtt is None]
+
+        if type_filter != "All":
+            pkts = [p for p in pkts if _matches_packet_type(p, type_filter)]
 
         # Last Heard
         # Bind to a local so the sort key is provably non-None: sorting a
