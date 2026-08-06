@@ -284,25 +284,44 @@ class MainWindow(QMainWindow):
         self._store.prune_async()
 
     def _export_packets(self) -> None:
-        import dataclasses
-
         from meshchat.services.export_service import ExportService
 
         # PacketIngestor.get_recent_packets() is a bounded 10,000-packet
-        # in-memory ring buffer, not the full session — on a long or busy
-        # session it silently drops the oldest packets. Every ingested
-        # packet is also durably written to the packets table though, so
-        # export from there instead for the complete session history. The
-        # packets table doesn't store message text (that lives in
-        # `messages`), so merge text back in from whatever packets are
-        # still in the in-memory buffer — best-effort, not required for
-        # correctness of every other field.
-        rows = self._store.read_packets_as_objects(self._session.id)
-        if not rows:
-            rows = self._ingestor.get_recent_packets()
+        # in-memory ring buffer — everything still in it is authoritative
+        # (it's the exact same data ChatView/rankings use, complete and
+        # with text) and always included as-is. MonitorStore only fills in
+        # whatever fell out of that buffer on a long/busy session: every
+        # ingested packet is durably written to the packets table, but that
+        # write is asynchronous and the table has no text column at all
+        # (message content lives in `messages`), so store rows are only
+        # used for packets NOT already covered by the in-memory set —
+        # never to replace or race against it.
+        recent = self._ingestor.get_recent_packets()
+        recent_keys = {(p.sender_num, p.packet_id, p.observed_at) for p in recent}
+        store_rows = self._store.read_packets_as_objects(self._session.id)
+        older = [p for p in store_rows if (p.sender_num, p.packet_id, p.observed_at) not in recent_keys]
+        rows = older + recent
+
         if not rows:
             self._status_bar.showMessage("Nothing to export — no packets captured yet", 5000)
             return
+
+        # read_packets_as_objects() caps at 200,000 rows — warn rather than
+        # silently truncate on the rare session that exceeds it, instead of
+        # exporting a file that looks complete but isn't.
+        total = self._store.packet_count(self._session.id)
+        if total > len(rows):
+            proceed = QMessageBox.question(
+                self,
+                "Partial Export",
+                f"This session has captured {total} packets, more than this export "
+                f"can include at once ({len(rows)} available) — the earliest packets "
+                "will be missing.\n\nExport the available packets anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if proceed != QMessageBox.StandardButton.Yes:
+                return
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Export Packet Log", "meshchat-packets.csv", "CSV files (*.csv)"
@@ -317,23 +336,12 @@ class MainWindow(QMainWindow):
             "Include message text?",
             "Include the text of received messages in the export?\n\n"
             "Message content is personal — leave this out if you plan to share the file.\n\n"
-            "Text is only available for packets still in memory this session — "
-            "packets from a previous run will export without it.",
+            "Text is only filled in for packets still held in this session's "
+            "in-memory buffer (the most recent ~10,000) — older rows in this "
+            "export will have it blank.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         ) == QMessageBox.StandardButton.Yes
-
-        if include_text:
-            text_by_key = {
-                (p.sender_num, p.packet_id, p.observed_at): p.text
-                for p in self._ingestor.get_recent_packets()
-                if p.text
-            }
-            rows = [
-                dataclasses.replace(p, text=text_by_key[(p.sender_num, p.packet_id, p.observed_at)])
-                if (p.sender_num, p.packet_id, p.observed_at) in text_by_key else p
-                for p in rows
-            ]
 
         try:
             count = ExportService.export_packets_csv(rows, Path(path), include_text=include_text)
