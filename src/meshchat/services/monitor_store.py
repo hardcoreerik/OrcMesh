@@ -457,14 +457,20 @@ class MonitorStore:
         delay = _RETRY_BACKOFF_BASE_SECONDS
         while True:
             attempt += 1
+            savepoint_active = False
             try:
                 conn.execute("SAVEPOINT item_write")
+                savepoint_active = True
                 self._write_one(conn, kind, obj)
                 conn.execute("RELEASE SAVEPOINT item_write")
                 return True
             except Exception as exc:
-                conn.execute("ROLLBACK TO SAVEPOINT item_write")
-                conn.execute("RELEASE SAVEPOINT item_write")
+                if savepoint_active:
+                    try:
+                        conn.execute("ROLLBACK TO SAVEPOINT item_write")
+                        conn.execute("RELEASE SAVEPOINT item_write")
+                    except Exception:
+                        pass
                 if _is_transient_sqlite_error(exc) and attempt <= _MAX_WRITE_RETRIES:
                     log.warning(
                         "MonitorStore write retry %d/%d for %r item: %s",
@@ -488,6 +494,14 @@ class MonitorStore:
             completed: list[tuple[str, Any]] = []
             try:
                 with conn:
+                    # Explicit BEGIN so the SAVEPOINTs inside
+                    # _write_item_with_retry nest inside this transaction
+                    # rather than becoming outermost transactions themselves.
+                    # Python's sqlite3 only auto-issues BEGIN before DML;
+                    # SAVEPOINT is not DML, so without this the first
+                    # SAVEPOINT would open and immediately commit its own
+                    # transaction on RELEASE, destroying batch efficiency.
+                    conn.execute("BEGIN")
                     for kind, obj in batch:
                         if self._write_item_with_retry(conn, kind, obj):
                             completed.append((kind, obj))
