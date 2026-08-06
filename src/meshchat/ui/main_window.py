@@ -734,13 +734,20 @@ class MainWindow(QMainWindow):
             # Closing mid-export: block until the write actually finishes
             # rather than destroying a still-running QThread out from under
             # it, which Qt warns about and can crash on some platforms.
-            # thread.quit() alone would not help here — run() is a
-            # synchronous blocking write; the thread's event loop (and so
-            # the finished/failed-triggered quit()) only gets a chance to
-            # act once run() itself returns. A short bounded wait() risks
-            # exactly the crash this is trying to avoid on a large export,
-            # so this waits as long as it actually takes.
-            if not self._export_thread.wait(5000):
-                log.warning("Waiting for an in-progress packet export to finish before closing…")
-                self._export_thread.wait()
+            #
+            # The explicit quit() here is required, not redundant with the
+            # worker's finished/failed -> thread.quit connections: those are
+            # QUEUED (the QThread object lives on this GUI thread, the
+            # worker emits from _export_thread), so they only get delivered
+            # once THIS thread's event loop is pumping — which it isn't
+            # while blocked in wait() below. Without this direct call, a
+            # write that finishes during that wait() would leave the
+            # worker thread parked in exec() forever with nothing left to
+            # ever tell it to quit, hanging app shutdown indefinitely.
+            # quit() itself does not interrupt the blocking write in
+            # progress — only ensures the thread doesn't idle in its event
+            # loop once that write actually returns — so this still waits
+            # as long as the write itself takes.
+            self._export_thread.quit()
+            self._export_thread.wait()
         super().closeEvent(event)
