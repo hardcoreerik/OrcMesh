@@ -130,6 +130,25 @@ class TestDeduplication:
         ing.ingest_raw(pkt2)
         assert ing._session.packet_count == 2
 
+    def test_packet_id_zero_is_deduped_by_the_strong_key(self):
+        # id == 0 is a legitimate packet id (same node_num == 0 pattern
+        # fixed elsewhere) — a truthy check on it would wrongly fall
+        # through to the weaker, 5-second-bucketed fallback fingerprint
+        # instead of the strong sender:pid:portnum:channel key.
+        #
+        # Submitting the identical packet twice isn't a real test of this:
+        # both the strong key AND the weak fallback fingerprint would dedupe
+        # it (same content, same 5s bucket), so it'd pass even with the old
+        # truthy check. Vary the decoded content on the second submission —
+        # only the strong (sender, id, portnum, channel) key still catches
+        # this as a dup; the fallback fingerprint would treat it as new.
+        ing = _make_ingestor()
+        pkt = dict(_FIXTURES["direct_text"], id=0)
+        pkt2 = dict(pkt, decoded={**pkt["decoded"], "text": "different"})
+        ing.ingest_raw(pkt)
+        ing.ingest_raw(pkt2)
+        assert ing._session.packet_count == 1
+
     def test_anonymous_packet_deduped_by_content_fingerprint(self):
         """
         Packets without 'from'/'id' get a SHA-256 content+time-bucket fingerprint.
