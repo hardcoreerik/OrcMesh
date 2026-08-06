@@ -50,3 +50,41 @@ class TestBandOutOfRangeWarning:
         idx = page._band.findData("US")
         page._band.setCurrentIndex(idx)
         assert page._center.minimum() <= page._center.value() <= page._center.maximum()
+
+
+class TestCustomFrequencyMarker:
+    """Covers fixed-frequency-override meshes (e.g. MeshOregon at 918.5 MHz)
+    that don't sit on any channel/preset-derived slot, so no region/preset
+    math could ever surface them — the user has to mark them manually."""
+
+    def test_add_custom_marker_appears_in_current_markers(self):
+        page = SpectrumPage()
+        page._custom_label.setText("MeshOregon")
+        page._custom_freq.setValue(918.5)
+        page._custom_bw.setValue(125.0)
+        page._on_add_custom_marker()
+
+        labels = [m.label for m in page._current_markers()]
+        assert "MeshOregon" in labels
+        marker = next(m for m in page._current_markers() if m.label == "MeshOregon")
+        assert marker.center_mhz == 918.5
+        assert marker.bandwidth_khz == 125.0
+
+    def test_add_custom_marker_without_label_uses_frequency(self):
+        page = SpectrumPage()
+        page._custom_label.setText("")
+        page._custom_freq.setValue(906.0)
+        page._on_add_custom_marker()
+
+        labels = [m.label for m in page._current_markers()]
+        assert "906.000 MHz" in labels
+
+    def test_clear_custom_markers_removes_them(self):
+        page = SpectrumPage()
+        page._custom_freq.setValue(918.5)
+        page._on_add_custom_marker()
+        assert page._custom_markers
+
+        page._on_clear_custom_markers()
+        assert page._custom_markers == []
+        assert all(m.center_mhz != 918.5 for m in page._current_markers())

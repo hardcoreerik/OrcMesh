@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 from meshchat.analytics.lora_bands import (
     MESHCORE_PLANS,
     MESHTASTIC_REGIONS,
+    ChannelMarker,
     meshcore_markers,
     meshtastic_markers,
 )
@@ -108,6 +110,54 @@ class SpectrumPage(QWidget):
 
         layout.addWidget(toolbar)
 
+        # ── Custom frequency marker toolbar ─────────────────────────────
+        # For community meshes that override to a fixed frequency instead of
+        # a computed channel slot (e.g. MeshOregon's 918.5 MHz override) —
+        # no region/preset/channel-number math can predict those, so let the
+        # user drop a marker manually.
+        custom_toolbar = QWidget()
+        custom_toolbar.setStyleSheet("background: #0D1530; border-bottom: 1px solid #1A2448;")
+        ctb = QHBoxLayout(custom_toolbar)
+        ctb.setContentsMargins(8, 6, 8, 6)
+        ctb.setSpacing(8)
+
+        ctb.addWidget(QLabel("Custom marker:"))
+        self._custom_label = QLineEdit()
+        self._custom_label.setPlaceholderText("Label (e.g. MeshOregon)")
+        self._custom_label.setFixedWidth(150)
+        ctb.addWidget(self._custom_label)
+
+        ctb.addWidget(QLabel("MHz:"))
+        self._custom_freq = QDoubleSpinBox()
+        self._custom_freq.setDecimals(3)
+        self._custom_freq.setRange(24.0, 1766.0)
+        self._custom_freq.setValue(915.0)
+        self._custom_freq.setFixedWidth(100)
+        ctb.addWidget(self._custom_freq)
+
+        ctb.addWidget(QLabel("BW (kHz):"))
+        self._custom_bw = QDoubleSpinBox()
+        self._custom_bw.setDecimals(0)
+        self._custom_bw.setRange(1.0, 1000.0)
+        self._custom_bw.setValue(125.0)
+        self._custom_bw.setFixedWidth(70)
+        ctb.addWidget(self._custom_bw)
+
+        add_marker_btn = QPushButton("Add")
+        add_marker_btn.setFixedWidth(60)
+        add_marker_btn.clicked.connect(self._on_add_custom_marker)
+        ctb.addWidget(add_marker_btn)
+
+        clear_markers_btn = QPushButton("Clear")
+        clear_markers_btn.setFixedWidth(60)
+        clear_markers_btn.clicked.connect(self._on_clear_custom_markers)
+        ctb.addWidget(clear_markers_btn)
+
+        ctb.addStretch()
+        layout.addWidget(custom_toolbar)
+
+        self._custom_markers: list[ChannelMarker] = []
+
         # ── Waterfall ──────────────────────────────────────────────────
         self._waterfall = WaterfallView()
         layout.addWidget(self._waterfall, 1)
@@ -169,18 +219,29 @@ class SpectrumPage(QWidget):
 
     def _current_markers(self) -> list:
         key = self._band.currentData()
-        if not key:
-            return []
         if self._protocol.currentText() == "MeshCore":
-            return meshcore_markers(key)
-        # Mark the active slot plus a couple either side, so neighbouring
-        # meshes sharing the band are visible too.
-        channel_num = self._live_channel_num if key == self._live_region else 0
-        return meshtastic_markers(key, self._live_preset, channel_num, include_neighbours=2)
+            base = meshcore_markers(key) if key else []
+        else:
+            # Mark the active slot plus a couple either side, so neighbouring
+            # meshes sharing the band are visible too.
+            channel_num = self._live_channel_num if key == self._live_region else 0
+            base = meshtastic_markers(key, self._live_preset, channel_num, include_neighbours=2) if key else []
+        return base + self._custom_markers
+
+    def _on_add_custom_marker(self) -> None:
+        label = self._custom_label.text().strip() or f"{self._custom_freq.value():.3f} MHz"
+        self._custom_markers.append(
+            ChannelMarker(label, self._custom_freq.value(), self._custom_bw.value())
+        )
+        self._apply_markers()
+
+    def _on_clear_custom_markers(self) -> None:
+        self._custom_markers.clear()
+        self._apply_markers()
 
     def _apply_markers(self) -> None:
         markers = self._current_markers()
-        self._waterfall.set_markers(markers)
+        self._waterfall.set_markers(markers, custom_markers=self._custom_markers)
         if not markers:
             self._marker_lbl.setText("")
             self._marker_lbl.setToolTip("")
