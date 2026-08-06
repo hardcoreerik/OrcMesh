@@ -26,7 +26,9 @@ from meshchat.controllers.meshtastic_controller import (
     MeshtasticController,
     MessageStatus,
 )
+from meshchat.models.connection_profile import ConnectionProfile
 from meshchat.models.network_session import NetworkSession
+from meshchat.services.connection_supervisor import ConnectionSupervisor
 from meshchat.services.monitor_store import MonitorStore
 from meshchat.services.packet_ingestor import PacketIngestor
 from meshchat.ui.chat_view import ChatView
@@ -102,6 +104,7 @@ class MainWindow(QMainWindow):
         self._session = NetworkSession.new()
         self._store = MonitorStore()
         self._ingestor = PacketIngestor(self._session, self._store)
+        self._supervisor = ConnectionSupervisor(self._controller, self._store, parent=self)
         self._export_thread: QThread | None = None
         self._export_worker: _PacketExportWorker | None = None
 
@@ -142,12 +145,18 @@ class MainWindow(QMainWindow):
         # Connection bar (always visible)
         self._conn_bar = ConnectionBar()
         self._conn_bar.scan_requested.connect(self._controller.scan_ble)
-        self._conn_bar.connect_ble_requested.connect(self._controller.connect_ble)
-        self._conn_bar.connect_tcp_requested.connect(self._controller.connect_tcp)
-        self._conn_bar.connect_serial_requested.connect(self._controller.connect_serial)
+        self._conn_bar.connect_ble_requested.connect(self._on_connect_ble_requested)
+        self._conn_bar.connect_tcp_requested.connect(self._on_connect_tcp_requested)
+        self._conn_bar.connect_serial_requested.connect(self._on_connect_serial_requested)
         self._conn_bar.list_serial_ports_requested.connect(self._controller.list_serial_ports)
-        self._conn_bar.disconnect_requested.connect(self._controller.disconnect)
+        self._conn_bar.disconnect_requested.connect(self._on_disconnect_requested)
         content_layout.addWidget(self._conn_bar)
+
+        # Restore last-used connection profile into the bar so the user
+        # doesn't have to re-type host/port on every launch.
+        _saved_profile = ConnectionSupervisor.load_profile(self._store)
+        if _saved_profile is not None:
+            self._conn_bar.restore_profile(_saved_profile)
 
         # Chat sub-layout: channel sidebar + chat view
         chat_container = QWidget()
@@ -517,6 +526,12 @@ class MainWindow(QMainWindow):
         self._channel_list.set_local_node(summary.node_num)
         self._local_node_num = summary.node_num
         self._status_bar.showMessage(f"Connected to {name}")
+        # Stamp the session with transport details from the active profile.
+        if self._supervisor._profile is not None:
+            p = self._supervisor._profile
+            self._session.transport = p.transport
+            self._session.connection_target = p.connection_target
+            self._store.save_session(self._session)
 
     def _on_disconnected(self, reason: str) -> None:
         self._conn_bar.set_device_name("")
@@ -719,6 +734,26 @@ class MainWindow(QMainWindow):
             except (ValueError, KeyError, TypeError) as exc:
                 log.debug("Skipping malformed persisted message: %s", exc)
         return messages
+
+    # ------------------------------------------------------------------
+    # Connection supervisor handlers
+    # ------------------------------------------------------------------
+
+    def _on_connect_tcp_requested(self, host: str, port: int) -> None:
+        self._supervisor.set_profile(ConnectionProfile(transport="tcp", tcp_host=host, tcp_port=port))
+        self._controller.connect_tcp(host, port)
+
+    def _on_connect_ble_requested(self, address: str) -> None:
+        self._supervisor.set_profile(ConnectionProfile(transport="ble", ble_address=address))
+        self._controller.connect_ble(address)
+
+    def _on_connect_serial_requested(self, port: str) -> None:
+        self._supervisor.set_profile(ConnectionProfile(transport="serial", serial_port=port))
+        self._controller.connect_serial(port)
+
+    def _on_disconnect_requested(self) -> None:
+        self._supervisor.cancel()
+        self._controller.disconnect()
 
     # ------------------------------------------------------------------
     # Lifecycle
