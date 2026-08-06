@@ -26,17 +26,23 @@ class FilterBar(QWidget):
         ("All",   None),
     ]
     _SRC_OPTIONS = ["All observed", "RF only", "MQTT-path", "Unknown transport"]
+    # Must match analytics.packet_classifier.packet_category()'s return
+    # values (bucketed the same way DistributionPanel's PacketBreakdownPanel
+    # does — "Unknown Port"/"Encrypted/Undecoded" collapse to one row), so
+    # this filter and the breakdown panel it's filtering agree on category
+    # names instead of using an independent, driftable mapping.
     _PKT_OPTIONS = [
         "All",
         "Text",
         "Position",
-        "NodeInfo",
-        "Telemetry",
+        "Node Info",
         "Routing",
+        "Telemetry",
         "Traceroute",
-        "NeighborInfo",
-        "PrivateApp",
-        "Other",
+        "Neighbor Info",
+        "Map Report",
+        "Private App",
+        "Other Known",
         "Unknown/Encrypted",
     ]
 

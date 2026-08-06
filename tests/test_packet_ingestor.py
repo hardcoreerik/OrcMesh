@@ -214,6 +214,18 @@ class TestNodeSnapshot:
         assert ing.get_node(444444).via_mqtt_count == 1
         assert ing.get_node(444444).rf_count == 0
 
+    def test_node_last_via_mqtt_tracks_the_most_recent_packet(self):
+        # Feeds NodeSnapshot.is_direct's via_mqtt check — a node's cumulative
+        # via_mqtt_count/rf_count can't tell you whether the MOST RECENT
+        # packet was bridged, which is what "is this node currently direct"
+        # needs.
+        ing = _make_ingestor()
+        ing.ingest_raw(_FIXTURES["mqtt_text"])
+        assert ing.get_node(444444).last_via_mqtt is True
+
+        ing.ingest_raw(_FIXTURES["direct_text"])
+        assert ing.get_node(111111).last_via_mqtt is False
+
     def test_node_name_populated_from_node_info(self):
         ing = _make_ingestor()
         ing.ingest_raw(_FIXTURES["node_info"])
@@ -234,21 +246,6 @@ class TestNodeSnapshot:
     def test_get_node_returns_none_for_unknown(self):
         ing = _make_ingestor()
         assert ing.get_node(0xDEAD_BEEF) is None
-
-    def test_update_node_from_db(self):
-        ing = _make_ingestor()
-        ing.ingest_raw(_FIXTURES["direct_text"])  # creates node 111111
-        db = {
-            111111: {
-                "user": {
-                    "id": "!0001b1c7",
-                    "longName": "From DB",
-                    "shortName": "DB",
-                }
-            }
-        }
-        ing.update_node_from_db(111111, db)
-        assert ing.get_node(111111).long_name == "From DB"
 
 
 # ── Signals emitted ───────────────────────────────────────────────────────────

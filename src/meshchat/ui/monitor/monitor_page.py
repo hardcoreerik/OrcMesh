@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from meshchat.analytics.packet_classifier import PORTNUM_TEXT
+from meshchat.analytics.packet_classifier import PORTNUM_TEXT, packet_category
 from meshchat.utils.time_format import format_elapsed, relative_age
 from meshchat.controllers.meshtastic_controller import ConnectionState
 from meshchat.models.network_packet import NetworkPacket
@@ -32,6 +33,20 @@ from meshchat.ui.monitor.rankings_panel import RankingsPanel
 from meshchat.ui.map.map_widget import MapWidget
 
 log = logging.getLogger(__name__)
+
+
+def _matches_packet_type(pkt: NetworkPacket, type_filter: str) -> bool:
+    """True if `pkt` belongs to the FilterBar `type_filter` category.
+
+    Delegates to analytics.packet_classifier.packet_category() rather than
+    re-deriving a portnum mapping, so this can't drift from
+    DistributionPanel's PacketBreakdownPanel — both bucket "Unknown Port"
+    and "Encrypted/Undecoded" into the one "Unknown/Encrypted" option/row.
+    """
+    category = packet_category(pkt.portnum, pkt.pki_encrypted)
+    if type_filter == "Unknown/Encrypted":
+        return category in ("Unknown Port", "Encrypted/Undecoded")
+    return category == type_filter
 
 
 class MonitorPage(QWidget):
@@ -285,12 +300,37 @@ class MonitorPage(QWidget):
     def _refresh_rankings(self) -> None:
         from meshchat.analytics.distance import haversine_km, format_distance
 
-        nodes = list(self._nodes.values())
-        pkts = self._recent_packets
+        all_nodes = list(self._nodes.values())
+        nodes = all_nodes
+        pkts: Sequence[NetworkPacket] = self._recent_packets
         now = datetime.now(timezone.utc)
         _ROW_LIMIT = 50
 
         age_s = self._active_filter.get("age_s")
+        source_filter = self._active_filter.get("source", "All observed")
+        type_filter = self._active_filter.get("portnum", "All")
+
+        # Age scopes Last Heard / role / hardware / Active to the window —
+        # but NOT Total or Direct below, which `all_nodes` (unfiltered)
+        # stays around for: Total is "all unique nodes seen this session or
+        # NodeDB" per the addendum spec, not "seen within the selected
+        # window", and Direct matches that same always-unfiltered scope.
+        # Source/type only make sense per-packet, so they narrow `pkts`
+        # alone.
+        if age_s is not None:
+            cutoff = now - timedelta(seconds=age_s)
+            nodes = [n for n in nodes if n.last_heard is not None and n.last_heard >= cutoff]
+            pkts = [p for p in pkts if p.observed_at >= cutoff]
+
+        if source_filter == "RF only":
+            pkts = [p for p in pkts if p.via_mqtt is False]
+        elif source_filter == "MQTT-path":
+            pkts = [p for p in pkts if p.via_mqtt is True]
+        elif source_filter == "Unknown transport":
+            pkts = [p for p in pkts if p.via_mqtt is None]
+
+        if type_filter != "All":
+            pkts = [p for p in pkts if _matches_packet_type(p, type_filter)]
 
         # Last Heard
         # Bind to a local so the sort key is provably non-None: sorting a
@@ -350,14 +390,19 @@ class MonitorPage(QWidget):
             for num, cnt in sorted_pkts[:_ROW_LIMIT]
         ])
 
-        # Nearby / Farthest — needs our own position plus each node's position
+        # Nearby / Farthest — needs our own position plus each node's
+        # position. Restricted to node nums still in the (age-filtered)
+        # `nodes` set: `self._positions` has no timestamp of its own, so a
+        # node's last_heard (already applied above) is the only freshness
+        # signal available — without this, Age had no effect here at all.
+        scoped_node_nums = {n.node_num for n in nodes}
         local_pos = self._positions.get(self._local_node_num) if self._local_node_num else None
         if local_pos:
             lat0, lon0 = local_pos
             distances = [
                 (num, haversine_km(lat0, lon0, lat, lon))
                 for num, (lat, lon) in self._positions.items()
-                if num != self._local_node_num
+                if num != self._local_node_num and num in scoped_node_nums
             ]
             distances.sort(key=lambda x: x[1], reverse=self._rank_nearby.is_flipped())
             self._rank_nearby.update_rows([
@@ -369,8 +414,17 @@ class MonitorPage(QWidget):
                 farthest = max(distances, key=lambda x: x[1])
                 self._card_closest.set_value(format_distance(closest[1]))
                 self._card_farthest.set_value(format_distance(farthest[1]))
+            else:
+                # Same class of bug as Signal above: age-scoping can empty
+                # `distances` on a later refresh (e.g. every positioned node
+                # aged out) while a previous refresh's values would
+                # otherwise stick around looking current.
+                self._card_closest.set_value("—")
+                self._card_farthest.set_value("—")
         else:
             self._rank_nearby.update_rows([])
+            self._card_closest.set_value("—")
+            self._card_farthest.set_value("—")
 
         # Strongest / Weakest Direct — best SNR per node (gathered above)
         sorted_snr = sorted(direct_snr.items(), key=lambda x: x[1],
@@ -388,18 +442,19 @@ class MonitorPage(QWidget):
             for num, cnt in sorted_msgs[:_ROW_LIMIT]
         ])
 
-        # Node counts
-        direct_nodes = {
-            n.node_num for n in nodes
-            if n.last_hops_used == 0 and n.last_hop_start and n.last_hop_start > 0
-        }
+        # Node counts. Direct and Total intentionally read `all_nodes`, not
+        # the age-filtered `nodes` — see the comment above. is_direct (not
+        # a re-derived hop check) so this can't drift from the Nodes
+        # table's own "Direct" column, which already accounts for
+        # MQTT-bridged zero-hop packets not being a real direct RF contact.
+        direct_nodes = {n.node_num for n in all_nodes if n.is_direct}
         active_nodes = {
             n.node_num for n in nodes
             if n.last_heard and (now - n.last_heard).total_seconds() <= (age_s or 3600)
         }
         self._card_direct.set_value(str(len(direct_nodes)))
         self._card_active.set_value(str(len(active_nodes)))
-        self._card_total.set_value(str(len(nodes)))
+        self._card_total.set_value(str(len(all_nodes)))
 
         # Roles
         infra_roles = {"ROUTER", "ROUTER_LATE", "CLIENT_BASE", "ROUTER_CLIENT", "REPEATER"}
@@ -410,15 +465,22 @@ class MonitorPage(QWidget):
 
         # Signal — median of the direct-RF samples gathered in the pass above.
         # Guarded independently so an RSSI-only sample set still updates the
-        # RSSI field instead of being suppressed by an empty SNR list.
+        # RSSI field instead of being suppressed by an empty SNR list. Both
+        # branches always set a value (never skip) — a Source/Type filter
+        # (e.g. "MQTT-path") can legitimately empty the direct-RF sample set
+        # on a later refresh, and without an explicit "—" here the previous
+        # refresh's median would keep showing as if it were still current.
         if direct_snrs:
             snrs = sorted(direct_snrs)
             self._card_signal.set_field("SNR", f"{snrs[len(snrs) // 2]:.1f} dB")
+        else:
+            self._card_signal.set_field("SNR", "—")
         if direct_rssis:
             rssis = sorted(direct_rssis)
-            # `is not None`, not truthiness: 0 dBm is a legitimate reading.
             med_rssi = rssis[len(rssis) // 2]
-            self._card_signal.set_field("RSSI", f"{med_rssi} dBm" if med_rssi is not None else "—")
+            self._card_signal.set_field("RSSI", f"{med_rssi} dBm")
+        else:
+            self._card_signal.set_field("RSSI", "—")
         self._card_signal.set_field("Noise", "N/A")
 
         # Hop analytics

@@ -28,6 +28,7 @@ class NodeSnapshot:
     last_rssi: int | None = None
     last_hops_used: int | None = None
     last_hop_start: int | None = None
+    last_via_mqtt: bool | None = None
 
     via_mqtt_count: int = 0
     rf_count: int = 0
@@ -52,9 +53,15 @@ class NodeSnapshot:
 
     @property
     def is_direct(self) -> bool:
-        """Most recent packet was a direct zero-hop RF packet."""
+        """Most recent packet was a direct zero-hop RF packet.
+
+        Mirrors analytics.hop_metrics.is_direct_rf / NetworkPacket.is_direct_rf
+        — a zero-hop packet relayed over MQTT is not a direct RF contact, it
+        just preserved the original hop fields across the bridge.
+        """
         return (
             self.last_hops_used == 0
             and self.last_hop_start is not None
             and self.last_hop_start > 0
+            and self.last_via_mqtt is not True
         )

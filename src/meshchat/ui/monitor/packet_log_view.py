@@ -66,7 +66,7 @@ class PacketLogModel(QAbstractTableModel):
             if col == 2:   # Sender
                 if pkt.sender_id:
                     return pkt.sender_id
-                if pkt.sender_num:
+                if pkt.sender_num is not None:
                     return f"!{pkt.sender_num:08x}"
                 return "?"
             if col == 3:   # Dest

@@ -54,6 +54,14 @@ class TestPacketLogModel:
         idx = model.index(3, 2)  # column 2 = Sender
         assert model.data(idx, Qt.ItemDataRole.DisplayRole) == "!00000067"  # 103 in hex
 
+    def test_sender_num_zero_is_shown_not_treated_as_missing(self):
+        # `if pkt.sender_num:` treated node 0 (a legitimate node number) the
+        # same as no sender at all, showing "?" instead of "!00000000".
+        model = PacketLogModel()
+        model.append_packet(_pkt(0))
+        idx = model.index(0, 2)  # column 2 = Sender
+        assert model.data(idx, Qt.ItemDataRole.DisplayRole) == "!00000000"
+
     def test_row_count_matches_appended_packets_below_cap(self):
         model = PacketLogModel()
         for i in range(50):
