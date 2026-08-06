@@ -245,32 +245,40 @@ class TestConnectionLost:
         assert ctrl._worker._interface is None
         ctrl.shutdown()
 
-    def test_stale_connection_lost_does_not_close_a_replacement_interface(self):
-        # meshtastic.connection.lost is published on the meshtastic library's
-        # own background thread, not this worker's thread, so a reconnect
-        # can replace self._interface between _on_connection_lost's initial
-        # identity check and the point where it acts. Simulate that
-        # interleaving deterministically by having the reconnect land during
-        # _set_state — which runs between the initial check and the
-        # re-check/close this fix added — rather than relying on real
-        # thread timing.
-        from meshchat.controllers.meshtastic_controller import MeshtasticWorker
+    def test_stale_connection_lost_is_a_complete_no_op_after_a_reconnect(self):
+        # meshtastic.connection.lost is published on the meshtastic
+        # library's own background thread, not this worker's thread. A
+        # naive "check identity, then act" sequence has a window where a
+        # reconnect can install a replacement interface between the check
+        # and the state-change/close/signals — which would then tear down
+        # or misreport the live (replacement) connection instead of the
+        # dead one the event is actually about.
+        # _claim_interface_if (see meshtastic_controller.py) closes that
+        # window by making the check-and-clear atomic under a lock. This
+        # simulates the event arriving for an interface that a reconnect
+        # has already fully replaced: EVERY side effect — state change,
+        # close, and both signals — must be skipped, not just the close.
+        from meshchat.controllers.meshtastic_controller import ConnectionState, MeshtasticWorker
         from tests.fakes.fake_meshtastic_interface import FakeMeshtasticInterface
 
         worker = MeshtasticWorker()
         old_iface = FakeMeshtasticInterface()
         new_iface = FakeMeshtasticInterface()
-        worker._interface = old_iface
+        worker._interface = new_iface
+        worker._state = ConnectionState.CONNECTED
 
-        orig_set_state = worker._set_state
+        states = []
+        disconnected = []
+        errors = []
+        worker._set_state = lambda *a, **k: states.append((a, k))
+        worker.disconnected.connect(disconnected.append)
+        worker.error_occurred.connect(errors.append)
 
-        def _set_state_and_swap(*args, **kwargs):
-            worker._interface = new_iface  # reconnect lands mid-callback
-            return orig_set_state(*args, **kwargs)
-
-        worker._set_state = _set_state_and_swap
         worker._on_connection_lost(interface=old_iface)
 
+        assert states == [], "Stale connection.lost must not change state"
+        assert disconnected == [], "Stale connection.lost must not emit disconnected"
+        assert errors == [], "Stale connection.lost must not emit an error"
         assert not new_iface._closed, "Replacement interface must not be closed"
-        assert not old_iface._closed, "Stale event is a no-op after the swap, not a close"
+        assert not old_iface._closed, "Stale event only ever no-ops, never closes anything"
         assert worker._interface is new_iface

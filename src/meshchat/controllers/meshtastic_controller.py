@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -319,6 +320,10 @@ class MeshtasticWorker(QObject):
         self._interface = None
         self._state = ConnectionState.DISCONNECTED
         self._subscribed = False
+        # meshtastic.connection.lost (and friends) are published from the
+        # meshtastic library's own background reader thread, not this
+        # worker's thread — see _claim_interface_if.
+        self._interface_lock = threading.Lock()
 
     # -----------------------------------------------------------------------
     # State helpers
@@ -413,28 +418,32 @@ class MeshtasticWorker(QObject):
             self._emit_error(ErrorCode.INTERNAL_ERROR, "Connection setup failed", str(exc), True)
 
     def _on_connection_lost(self, interface=None, topics=None) -> None:
-        if not self._is_active_interface(interface):
+        if interface is None:
             return
         # meshtastic.connection.lost is published from the meshtastic
-        # library's own background reader thread, not this worker's thread —
-        # a reconnect can replace self._interface between the check above
-        # and here. Re-check identity right before acting so a stale loss
-        # event for an interface that's already been superseded reports
-        # nothing and, critically, _close_interface below can't tear down
-        # the replacement connection.
-        if self._interface is not interface:
+        # library's own background reader thread, not this worker's thread,
+        # so a plain "check identity, then act" sequence has a window where
+        # a reconnect can install a replacement interface between the check
+        # and the state-change/close/signals below — which would then tear
+        # down or misreport the live connection instead of the dead one
+        # this event is actually about. _claim_interface_if makes the
+        # check-and-clear atomic: every side effect below only runs if this
+        # call is the exclusive owner of tearing down exactly `interface`.
+        if not self._claim_interface_if(interface):
             return
         self._set_state(ConnectionState.ERROR, "Connection lost")
         # Every other path that ends a connection (disconnect(), a failed
-        # (re)connect attempt) calls this — this one didn't, leaving the
-        # dead interface's background reader thread and socket/handle
-        # alive and leaking until the user happened to click Connect or
-        # Disconnect again. close() is wrapped in try/except internally,
-        # so calling it on an interface that's already failing is safe.
-        # `expected=interface` makes the close itself identity-safe too,
-        # in case a reconnect lands in the tiny window right after the
-        # re-check above.
-        self._close_interface(expected=interface)
+        # (re)connect attempt) calls _close_interface() — this one didn't,
+        # leaving the dead interface's background reader thread and
+        # socket/handle alive and leaking until the user happened to click
+        # Connect or Disconnect again. close() is wrapped in try/except
+        # internally, so calling it on an interface that's already failing
+        # is safe. self._interface is already cleared by the claim above,
+        # so this only closes `interface` itself — never a replacement.
+        try:
+            interface.close()
+        except Exception as exc:
+            log.warning("Closing the radio interface failed: %s", exc)
         self.disconnected.emit("Radio connection lost")
         self._emit_error(
             ErrorCode.CONNECTION_LOST,
@@ -903,20 +912,41 @@ class MeshtasticWorker(QObject):
     # Internal helpers
     # -----------------------------------------------------------------------
 
-    def _close_interface(self, expected: object | None = None) -> None:
-        # `expected`, when given, makes this identity-safe: only close and
-        # clear self._interface if it's still the object the caller checked
-        # against, not whatever got installed in between (see
-        # _on_connection_lost).
-        if expected is not None and self._interface is not expected:
-            return
-        iface = self._interface
-        self._interface = None
+    def _close_interface(self) -> None:
+        # Always called from this worker's own thread. Still takes the
+        # lock: without it, this read-then-clear could interleave with
+        # _claim_interface_if's read-then-clear (called from a PubSub
+        # callback on the meshtastic library's own thread) and double-close
+        # or lose track of an interface.
+        with self._interface_lock:
+            iface = self._interface
+            self._interface = None
         if iface is not None:
             try:
                 iface.close()
             except Exception as exc:
                 log.warning("Closing the radio interface failed: %s", exc)
+
+    def _claim_interface_if(self, expected: object) -> bool:
+        """Atomically clear self._interface iff it is still `expected`.
+
+        Used by PubSub callbacks (meshtastic.connection.lost) that run on
+        the meshtastic library's own background thread, concurrently with
+        this worker's connect/disconnect methods on its own QThread. A
+        plain "check identity, then act" sequence has a window between the
+        check and the act where a reconnect can install a replacement
+        interface — closing or state-changing based on the stale check
+        would then tear down or misreport the live connection. This makes
+        the check-and-claim a single atomic step: if it returns True, the
+        caller now exclusively owns tearing down exactly `expected` (never
+        a replacement), and self._interface is already cleared for the
+        next connect. If it returns False, the event is stale — no-op.
+        """
+        with self._interface_lock:
+            if self._interface is not expected:
+                return False
+            self._interface = None
+            return True
 
     def _emit_error(
         self,
