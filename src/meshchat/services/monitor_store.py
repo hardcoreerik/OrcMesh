@@ -146,6 +146,29 @@ class MonitorStore:
         """
         self._enqueue(("message_status", (local_id, packet_id, status)))
 
+    # ------------------------------------------------------------------
+    # App settings (key/value pairs persisted in the app_settings table)
+    # ------------------------------------------------------------------
+
+    def get_setting(self, key: str) -> str | None:
+        """Read a single app setting. Opens its own read connection — safe
+        to call from any thread. Returns None if the key is absent."""
+        try:
+            conn = self._read_conn()
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key=?", (key,)
+            ).fetchone()
+            conn.close()
+            return row[0] if row else None
+        except Exception as exc:
+            log.error("MonitorStore.get_setting(%r) failed: %s", key, exc)
+            return None
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Persist a key/value app setting. Async (queued through the writer
+        thread). Overwrites any existing value for the same key."""
+        self._enqueue(("setting", (key, value)))
+
     def _enqueue(self, item: Any) -> None:
         try:
             self._write_q.put_nowait(item)
@@ -510,6 +533,8 @@ class MonitorStore:
             self._write_message(conn, obj)
         elif kind == "message_status":
             self._write_message_status(conn, obj)
+        elif kind == "setting":
+            self._write_setting(conn, obj)
 
     def _write_item_with_retry(self, conn: sqlite3.Connection, kind: str, obj: Any) -> bool:
         """Write one queued item inside its own SAVEPOINT so a failure here
@@ -786,6 +811,13 @@ class MonitorStore:
         conn.execute(
             "UPDATE messages SET status=?, packet_id=COALESCE(?, packet_id) WHERE local_id=?",
             (status.value, packet_id, local_id),
+        )
+
+    def _write_setting(self, conn: sqlite3.Connection, kv: tuple) -> None:
+        key, value = kv
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+            (key, value),
         )
 
     def _read_conn(self) -> sqlite3.Connection:

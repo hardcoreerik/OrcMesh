@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from meshchat.controllers.meshtastic_controller import ConnectionState
+from meshchat.models.connection_profile import ConnectionProfile
 
 log = logging.getLogger(__name__)
 
@@ -177,6 +178,28 @@ class ConnectionBar(QWidget):
 
     def set_device_name(self, name: str) -> None:
         self._device_label.setText(f"  {name}" if name else "")
+
+    def restore_profile(self, profile: ConnectionProfile) -> None:
+        """Pre-fill connection fields from a saved profile.
+
+        Called once at startup after loading the last-used profile from
+        app_settings. Only fills fields that the profile actually has — a
+        partial profile (e.g. transport only) is fine.
+        """
+        transport_idx = {"ble": 0, "tcp": 1, "serial": 2}.get(profile.transport)
+        if transport_idx is not None:
+            self._transport.setCurrentIndex(transport_idx)
+            self._on_transport_changed(transport_idx)
+        if profile.tcp_host:
+            self._tcp_host.setText(profile.tcp_host)
+        if profile.tcp_port and profile.tcp_port != 4403:
+            self._tcp_port.setValue(profile.tcp_port)
+        if profile.serial_port:
+            idx = self._serial_combo.findData(profile.serial_port)
+            if idx < 0:
+                self._serial_combo.addItem(profile.serial_port, userData=profile.serial_port)
+                idx = self._serial_combo.count() - 1
+            self._serial_combo.setCurrentIndex(idx)
 
     # ------------------------------------------------------------------
     # Private

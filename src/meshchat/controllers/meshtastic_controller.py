@@ -568,7 +568,7 @@ class MeshtasticWorker(QObject):
 
     @Slot(str)
     def connect_ble(self, address: str) -> None:
-        if self._state not in (ConnectionState.DISCONNECTED, ConnectionState.ERROR):
+        if self._state not in (ConnectionState.DISCONNECTED, ConnectionState.ERROR, ConnectionState.RECONNECTING):
             return
         self._close_interface()
         self._subscribe()
@@ -612,7 +612,7 @@ class MeshtasticWorker(QObject):
 
     @Slot(str, int)
     def connect_tcp(self, host: str, port: int = 4403) -> None:
-        if self._state not in (ConnectionState.DISCONNECTED, ConnectionState.ERROR):
+        if self._state not in (ConnectionState.DISCONNECTED, ConnectionState.ERROR, ConnectionState.RECONNECTING):
             return
         host = host.strip()
         if not host:
@@ -681,7 +681,7 @@ class MeshtasticWorker(QObject):
 
     @Slot(str)
     def connect_serial(self, port: str) -> None:
-        if self._state not in (ConnectionState.DISCONNECTED, ConnectionState.ERROR):
+        if self._state not in (ConnectionState.DISCONNECTED, ConnectionState.ERROR, ConnectionState.RECONNECTING):
             return
         port = port.strip()
         if not port:
@@ -910,6 +910,20 @@ class MeshtasticWorker(QObject):
     # Internal helpers
     # -----------------------------------------------------------------------
 
+    @Slot(str)
+    def enter_reconnecting(self, detail: str = "") -> None:
+        """Set state to RECONNECTING; called by ConnectionSupervisor while
+        waiting between retry attempts. A no-op if the worker is already
+        busy connecting or fully connected — those states must not be
+        interrupted from outside."""
+        if self._state in (
+            ConnectionState.CONNECTING,
+            ConnectionState.SYNCING,
+            ConnectionState.CONNECTED,
+        ):
+            return
+        self._set_state(ConnectionState.RECONNECTING, detail)
+
     def _close_interface(self) -> None:
         iface = self._interface
         self._interface = None
@@ -1013,6 +1027,11 @@ class MeshtasticController(QObject):
     def disconnect(self) -> None:
         from PySide6.QtCore import QMetaObject, Qt
         QMetaObject.invokeMethod(self._worker, "disconnect", Qt.ConnectionType.QueuedConnection)
+
+    def enter_reconnecting(self, detail: str = "") -> None:
+        from PySide6.QtCore import QMetaObject, Qt, Q_ARG
+        QMetaObject.invokeMethod(self._worker, "enter_reconnecting",
+                                 Qt.ConnectionType.QueuedConnection, Q_ARG(str, detail))
 
     def send_channel_text(self, text: str, channel_index: int, local_id: str) -> None:
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
