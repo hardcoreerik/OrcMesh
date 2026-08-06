@@ -68,7 +68,7 @@ class TestInboundToFieldZero:
             "from": 0x1111,
             "fromId": "!00001111",
             "to": 0,
-            "toNum": 0xDEADBEEF,  # must NOT be used — "to" is present and 0
+            "toNum": 0xFFFFFFFF,  # BROADCAST_NUM — old `to or toNum` would pick this and classify as broadcast
             "id": 42,
             "channel": 0,
             "decoded": {"text": "hi"},
