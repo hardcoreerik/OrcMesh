@@ -38,6 +38,15 @@ def _dt_str(dt: datetime | None) -> str | None:
     return dt.isoformat()
 
 
+def _parse_dt(iso_str: str | None) -> datetime | None:
+    if not iso_str:
+        return None
+    try:
+        return datetime.fromisoformat(iso_str)
+    except ValueError:
+        return None
+
+
 class MonitorStore:
     """
     SQLite persistence for the Network Monitor.
@@ -127,6 +136,50 @@ class MonitorStore:
         except Exception as exc:
             log.error("MonitorStore.read_packets failed: %s", exc)
             return []
+
+    def read_packets_as_objects(self, session_id: str, limit: int = 200_000) -> list[NetworkPacket]:
+        """Like read_packets(), reconstructed as NetworkPacket objects.
+
+        Used for exporting a session's full packet history — beyond what
+        PacketIngestor's bounded in-memory ring buffer retains. `text` and
+        `raw_metadata_json` are always None here: message text isn't stored
+        in the packets table at all (it lives in `messages`, keyed by
+        chat-relevant fields the packets table doesn't carry), so callers
+        that need it must merge it back in themselves from whatever
+        still-in-memory packets happen to overlap.
+        """
+        rows = self.read_packets(session_id, limit=limit)
+        packets = []
+        for r in rows:
+            via_mqtt = r.get("via_mqtt")
+            pki_encrypted = r.get("pki_encrypted")
+            want_ack = r.get("want_ack")
+            packets.append(NetworkPacket(
+                session_id=r["session_id"],
+                observed_at=_parse_dt(r.get("observed_at")) or datetime.now(timezone.utc),
+                rx_time=_parse_dt(r.get("rx_time")),
+                sender_num=r.get("sender_num"),
+                sender_id=r.get("sender_id"),
+                destination_num=r.get("destination_num"),
+                packet_id=r.get("packet_id"),
+                channel_index=r.get("channel_index"),
+                portnum=r.get("portnum"),
+                portnum_name=r.get("portnum_name") or "",
+                text=None,
+                payload_size=r.get("payload_size"),
+                rx_snr=r.get("rx_snr"),
+                rx_rssi=r.get("rx_rssi"),
+                hop_start=r.get("hop_start"),
+                hop_limit=r.get("hop_limit"),
+                hops_used=r.get("hops_used"),
+                via_mqtt=bool(via_mqtt) if via_mqtt is not None else None,
+                transport_mechanism=r.get("transport_mechanism"),
+                pki_encrypted=bool(pki_encrypted) if pki_encrypted is not None else None,
+                want_ack=bool(want_ack) if want_ack is not None else None,
+                priority=r.get("priority"),
+                raw_metadata_json=None,
+            ))
+        return packets
 
     def packet_count(self, session_id: str) -> int:
         try:

@@ -349,9 +349,15 @@ class PacketIngestor(QObject):
             node.last_hop_start = pkt.hop_start
             node.last_via_mqtt = pkt.via_mqtt
 
-            if pkt.is_via_mqtt:
+            # Tri-state, not pkt.is_via_mqtt (bool(via_mqtt), which coerces
+            # None to False): older firmware that never reports viaMqtt at
+            # all must not be counted as confirmed RF — these counters now
+            # persist across restarts (see MonitorStore._write_node /
+            # PacketIngestor.seed_from_store), so misclassifying "unknown"
+            # as "confirmed RF" here would keep compounding every session.
+            if pkt.via_mqtt is True:
                 node.via_mqtt_count += 1
-            else:
+            elif pkt.via_mqtt is False:
                 node.rf_count += 1
 
             if pkt.portnum == PORTNUM_TEXT:

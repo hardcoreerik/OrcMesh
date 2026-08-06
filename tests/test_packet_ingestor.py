@@ -214,6 +214,20 @@ class TestNodeSnapshot:
         assert ing.get_node(444444).via_mqtt_count == 1
         assert ing.get_node(444444).rf_count == 0
 
+    def test_unknown_transport_increments_neither_counter(self):
+        # via_mqtt absent entirely (older firmware that never reports it)
+        # must not be misclassified as confirmed RF — `pkt.is_via_mqtt`
+        # coerces None to False via bool(), which used to do exactly that.
+        # These counters now persist across restarts, so a wrong count
+        # here would keep compounding every session.
+        ing = _make_ingestor()
+        pkt = dict(_FIXTURES["direct_text"])
+        del pkt["viaMqtt"]
+        ing.ingest_raw(pkt)
+        node = ing.get_node(111111)
+        assert node.rf_count == 0
+        assert node.via_mqtt_count == 0
+
     def test_node_last_via_mqtt_tracks_the_most_recent_packet(self):
         # Feeds NodeSnapshot.is_direct's via_mqtt check — a node's cumulative
         # via_mqtt_count/rf_count can't tell you whether the MOST RECENT

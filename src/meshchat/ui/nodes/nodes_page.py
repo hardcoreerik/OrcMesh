@@ -253,18 +253,20 @@ class NodesPage(QWidget):
 
     def _confirm_remove(self, node_num: int, name: str) -> None:
         # Removing writes to the radio's own NodeDB — confirm before doing
-        # it. This does NOT touch MeshChat's own local node history: the
-        # entry will still show here (and in Rankings/the Map) until it
-        # ages out on its own, since MeshChat's node table is intentionally
-        # exempt from history pruning. Say so explicitly — the previous
-        # wording ("will reappear if it transmits again") read as if
-        # removal took effect here too, when it never left this view at all.
+        # it. This does NOT touch MeshChat's own local node history at all:
+        # MeshChat's node table is intentionally exempt from history
+        # pruning, so the entry keeps showing here (and in Rankings/the
+        # Map) indefinitely regardless of whether the node ever transmits
+        # again — say so explicitly rather than implying it only sticks
+        # around until its next transmission, which overstates how much
+        # this action actually does on the MeshChat side.
         reply = QMessageBox.question(
             self,
             "Remove Node",
             f"Remove “{name}” from the connected radio's own node database?\n\n"
-            "This only affects the physical radio — it will still appear "
-            "in MeshChat's own history here until it transmits again.",
+            "This only affects the physical radio. MeshChat's own node "
+            "history here is untouched — the entry stays in the Nodes "
+            "table, Rankings, and Map regardless.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )

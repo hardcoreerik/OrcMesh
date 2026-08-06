@@ -284,31 +284,25 @@ class MainWindow(QMainWindow):
         self._store.prune_async()
 
     def _export_packets(self) -> None:
+        import dataclasses
+
         from meshchat.services.export_service import ExportService
 
-        rows = self._ingestor.get_recent_packets()
+        # PacketIngestor.get_recent_packets() is a bounded 10,000-packet
+        # in-memory ring buffer, not the full session — on a long or busy
+        # session it silently drops the oldest packets. Every ingested
+        # packet is also durably written to the packets table though, so
+        # export from there instead for the complete session history. The
+        # packets table doesn't store message text (that lives in
+        # `messages`), so merge text back in from whatever packets are
+        # still in the in-memory buffer — best-effort, not required for
+        # correctness of every other field.
+        rows = self._store.read_packets_as_objects(self._session.id)
+        if not rows:
+            rows = self._ingestor.get_recent_packets()
         if not rows:
             self._status_bar.showMessage("Nothing to export — no packets captured yet", 5000)
             return
-
-        # get_recent_packets() is backed by a bounded in-memory ring buffer
-        # (10,000 packets), not the full session history — on a long or
-        # busy session the buffer wraps and silently drops the oldest
-        # packets from every export with no indication anything was left
-        # out. Warn rather than let the export quietly look complete.
-        if self._session.packet_count > len(rows):
-            proceed = QMessageBox.question(
-                self,
-                "Partial Export",
-                f"This session has captured {self._session.packet_count} packets, but only "
-                f"the most recent {len(rows)} are kept in memory and available to export — "
-                f"the earliest {self._session.packet_count - len(rows)} will be missing.\n\n"
-                "Export the available packets anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
-            )
-            if proceed != QMessageBox.StandardButton.Yes:
-                return
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Export Packet Log", "meshchat-packets.csv", "CSV files (*.csv)"
@@ -322,10 +316,24 @@ class MainWindow(QMainWindow):
             self,
             "Include message text?",
             "Include the text of received messages in the export?\n\n"
-            "Message content is personal — leave this out if you plan to share the file.",
+            "Message content is personal — leave this out if you plan to share the file.\n\n"
+            "Text is only available for packets still in memory this session — "
+            "packets from a previous run will export without it.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         ) == QMessageBox.StandardButton.Yes
+
+        if include_text:
+            text_by_key = {
+                (p.sender_num, p.packet_id, p.observed_at): p.text
+                for p in self._ingestor.get_recent_packets()
+                if p.text
+            }
+            rows = [
+                dataclasses.replace(p, text=text_by_key[(p.sender_num, p.packet_id, p.observed_at)])
+                if (p.sender_num, p.packet_id, p.observed_at) in text_by_key else p
+                for p in rows
+            ]
 
         try:
             count = ExportService.export_packets_csv(rows, Path(path), include_text=include_text)
