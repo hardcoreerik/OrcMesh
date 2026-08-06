@@ -88,3 +88,32 @@ class TestCustomFrequencyMarker:
         page._on_clear_custom_markers()
         assert page._custom_markers == []
         assert all(m.center_mhz != 918.5 for m in page._current_markers())
+
+    def test_custom_label_does_not_hijack_the_active_recenter_target(self):
+        # A custom marker labelled "Active override" must not be mistaken
+        # for the computed active-slot marker by the "active" substring
+        # heuristic in _on_band_changed — that heuristic must only look at
+        # base (region/preset-computed) markers, not user-typed ones.
+        page = SpectrumPage()
+        idx = page._band.findData("US")
+        page._band.setCurrentIndex(idx)
+        expected_center = page._center.value()
+
+        page._custom_label.setText("Active override")
+        page._custom_freq.setValue(918.5)
+        page._on_add_custom_marker()
+
+        page._on_band_changed(page._band.currentIndex())
+        assert page._center.value() == expected_center
+
+    def test_custom_label_does_not_hijack_the_status_line(self):
+        page = SpectrumPage()
+        idx = page._band.findData("US")
+        page._band.setCurrentIndex(idx)
+        original_marker_text = page._marker_lbl.text()
+
+        page._custom_label.setText("nominal test")
+        page._custom_freq.setValue(918.5)
+        page._on_add_custom_marker()
+
+        assert page._marker_lbl.text() == original_marker_text

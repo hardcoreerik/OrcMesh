@@ -93,6 +93,10 @@ class SpectrumPage(QWidget):
         tb.addStretch()
 
         self._marker_lbl = QLabel("")
+        # Text can come from a user-typed custom marker label — force plain
+        # text so it can't be interpreted as rich/HTML text (QLabel
+        # auto-detects rich text by content).
+        self._marker_lbl.setTextFormat(Qt.TextFormat.PlainText)
         self._marker_lbl.setStyleSheet("color: #00D4FF; font-size: 11px;")
         tb.addWidget(self._marker_lbl)
 
@@ -217,16 +221,25 @@ class SpectrumPage(QWidget):
         self._band.blockSignals(False)
         self._on_band_changed(self._band.currentIndex())
 
-    def _current_markers(self) -> list:
+    def _base_markers(self) -> list:
+        """Computed region/preset markers only — no user-added custom ones.
+
+        Kept separate from `_current_markers()` because the "active"/
+        "nominal" substring heuristics below only make sense against labels
+        this code generated itself; a user-typed custom label containing
+        those words must not be able to steal the recenter target or the
+        status line (see _on_band_changed / _apply_markers).
+        """
         key = self._band.currentData()
         if self._protocol.currentText() == "MeshCore":
-            base = meshcore_markers(key) if key else []
-        else:
-            # Mark the active slot plus a couple either side, so neighbouring
-            # meshes sharing the band are visible too.
-            channel_num = self._live_channel_num if key == self._live_region else 0
-            base = meshtastic_markers(key, self._live_preset, channel_num, include_neighbours=2) if key else []
-        return base + self._custom_markers
+            return meshcore_markers(key) if key else []
+        # Mark the active slot plus a couple either side, so neighbouring
+        # meshes sharing the band are visible too.
+        channel_num = self._live_channel_num if key == self._live_region else 0
+        return meshtastic_markers(key, self._live_preset, channel_num, include_neighbours=2) if key else []
+
+    def _current_markers(self) -> list:
+        return self._base_markers() + self._custom_markers
 
     def _on_add_custom_marker(self) -> None:
         label = self._custom_label.text().strip() or f"{self._custom_freq.value():.3f} MHz"
@@ -247,10 +260,11 @@ class SpectrumPage(QWidget):
             self._marker_lbl.setToolTip("")
             return
 
+        base_markers = self._base_markers()
         primary = next(
-            (m for m in markers
+            (m for m in base_markers
              if "active" in m.label.lower() or "nominal" in m.label.lower()),
-            markers[0],
+            base_markers[0] if base_markers else markers[0],
         )
         self._marker_lbl.setText(f"Marked: {primary.label} @ {primary.center_mhz:.3f} MHz")
         if "nominal" in primary.label.lower():
@@ -299,8 +313,10 @@ class SpectrumPage(QWidget):
         else:
             band = MESHTASTIC_REGIONS.get(key)
             if band:
-                # Centre on the active slot if we know it, else the band centre
-                markers = self._current_markers()
+                # Centre on the active slot if we know it, else the band centre.
+                # Base markers only — a user custom label containing "active"
+                # must not steal the recenter target.
+                markers = self._base_markers()
                 active = next((m for m in markers if "active" in m.label.lower()), None)
                 target_mhz = active.center_mhz if active else band.center_mhz
 
