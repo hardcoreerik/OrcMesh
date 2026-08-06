@@ -5,6 +5,8 @@ import logging
 import queue
 import sqlite3
 import threading
+import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,36 @@ APP_NAME = "MeshChat"
 #: Days of packet/position/telemetry history to keep. Node identities and
 #: chat messages are never pruned.
 DEFAULT_RETAIN_DAYS = 30
+
+#: A single queued item gets this many extra attempts after a transient
+#: SQLite error (lock contention, SQLITE_BUSY) before it's given up on as a
+#: permanent failure. Chosen to ride out a brief external lock (antivirus,
+#: backup tool) without stalling the writer thread for long.
+_MAX_WRITE_RETRIES = 3
+_RETRY_BACKOFF_BASE_SECONDS = 0.05
+
+
+def _is_transient_sqlite_error(exc: BaseException) -> bool:
+    """True for SQLite errors expected to clear up if retried shortly — the
+    file was briefly locked by another process, or SQLITE_BUSY. False for
+    programming errors (bad SQL, constraint violations) which retrying
+    can't fix and would just delay recognizing as a permanent failure."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+@dataclass(frozen=True)
+class DatabaseWriterHealth:
+    """Snapshot of MonitorStore's background writer, for a future
+    degraded-storage indicator in the UI."""
+    queue_depth: int
+    queue_capacity: int
+    dropped_count: int
+    failed_count: int
+    writer_alive: bool
+    last_error: str | None
 
 
 def _db_path() -> Path:
@@ -70,6 +102,14 @@ class MonitorStore:
         self._writer = threading.Thread(target=self._writer_loop, daemon=True, name="db-writer")
         self._writer.start()
         self._available = True
+
+        # Guards the counters below, which are written from the writer
+        # thread and read from the GUI/caller thread via health().
+        self._health_lock = threading.Lock()
+        self._dropped_count = 0
+        self._failed_count = 0
+        self._last_error: str | None = None
+
         log.info("MonitorStore opened: %s", self._path)
 
     # ------------------------------------------------------------------
@@ -109,7 +149,37 @@ class MonitorStore:
         try:
             self._write_q.put_nowait(item)
         except queue.Full:
-            log.warning("MonitorStore write queue full, dropping item")
+            with self._health_lock:
+                self._dropped_count += 1
+                total_dropped = self._dropped_count
+            log.warning(
+                "MonitorStore write queue full (capacity %d), dropping item "
+                "(%d dropped since open)",
+                self._write_q.maxsize, total_dropped,
+            )
+
+    def health(self) -> DatabaseWriterHealth:
+        """Point-in-time snapshot for a degraded-storage indicator."""
+        with self._health_lock:
+            dropped, failed, last_error = self._dropped_count, self._failed_count, self._last_error
+        return DatabaseWriterHealth(
+            queue_depth=self._write_q.qsize(),
+            queue_capacity=self._write_q.maxsize,
+            dropped_count=dropped,
+            failed_count=failed,
+            writer_alive=self._writer.is_alive(),
+            last_error=last_error,
+        )
+
+    def _record_failed_item(self, kind: str, exc: BaseException) -> None:
+        with self._health_lock:
+            self._failed_count += 1
+            self._last_error = f"{kind}: {exc}"
+        log.error("MonitorStore permanently failed to write a %r item: %s", kind, exc)
+
+    def _record_error(self, message: str) -> None:
+        with self._health_lock:
+            self._last_error = message
 
     # ------------------------------------------------------------------
     # Read API (called from GUI/worker threads, opens own connection)
@@ -244,12 +314,24 @@ class MonitorStore:
         return rows[0] if rows else None
 
     def read_messages(self, limit: int = 5000) -> list[dict]:
-        """All persisted chat messages (channel broadcasts and direct messages),
-        oldest first, across all sessions — chat history survives app restarts."""
+        """The most recent `limit` persisted chat messages (channel broadcasts
+        and direct messages), across all sessions, returned oldest-first —
+        chat history survives app restarts.
+
+        Selects the newest rows first (by observed_at, with rowid as a
+        deterministic tiebreaker for messages sharing a timestamp), then
+        re-sorts that selection into chronological order. Selecting oldest
+        first and capping with LIMIT would silently drop every message newer
+        than the cutoff once the table exceeds `limit` rows — the opposite of
+        what a bounded history load should do.
+        """
         try:
             conn = self._read_conn()
             rows = conn.execute(
-                "SELECT * FROM messages ORDER BY observed_at ASC LIMIT ?", (limit,)
+                """SELECT * FROM (
+                    SELECT * FROM messages ORDER BY observed_at DESC, rowid DESC LIMIT ?
+                ) ORDER BY observed_at ASC, rowid ASC""",
+                (limit,),
             ).fetchall()
             conn.close()
             return [dict(r) for r in rows]
@@ -357,32 +439,95 @@ class MonitorStore:
         except Exception as exc:
             log.error("MonitorStore writer crashed: %s", exc, exc_info=True)
             self._available = False
+            self._record_error(f"writer thread crashed: {exc}")
+
+    def _write_one(self, conn: sqlite3.Connection, kind: str, obj: Any) -> None:
+        if kind == "packet":
+            self._write_packet(conn, obj)
+        elif kind == "session":
+            self._write_session(conn, obj)
+        elif kind == "position":
+            self._write_position(conn, obj)
+        elif kind == "telemetry":
+            self._write_telemetry(conn, obj)
+        elif kind == "node":
+            self._write_node(conn, obj)
+        elif kind == "message":
+            self._write_message(conn, obj)
+        elif kind == "message_status":
+            self._write_message_status(conn, obj)
+
+    def _write_item_with_retry(self, conn: sqlite3.Connection, kind: str, obj: Any) -> bool:
+        """Write one queued item inside its own SAVEPOINT so a failure here
+        rolls back only this item, not the rest of the batch's transaction.
+
+        A transient error (lock contention, SQLITE_BUSY) is retried with
+        bounded backoff; anything else — or exhausting the retries — fails
+        just this item. Returns True on success.
+        """
+        attempt = 0
+        delay = _RETRY_BACKOFF_BASE_SECONDS
+        while True:
+            attempt += 1
+            savepoint_active = False
+            try:
+                conn.execute("SAVEPOINT item_write")
+                savepoint_active = True
+                self._write_one(conn, kind, obj)
+                conn.execute("RELEASE SAVEPOINT item_write")
+                return True
+            except Exception as exc:
+                if savepoint_active:
+                    try:
+                        conn.execute("ROLLBACK TO SAVEPOINT item_write")
+                        conn.execute("RELEASE SAVEPOINT item_write")
+                    except Exception:
+                        pass
+                if _is_transient_sqlite_error(exc) and attempt <= _MAX_WRITE_RETRIES:
+                    log.warning(
+                        "MonitorStore write retry %d/%d for %r item: %s",
+                        attempt, _MAX_WRITE_RETRIES, kind, exc,
+                    )
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                self._record_failed_item(kind, exc)
+                return False
 
     def _flush(self, conn: sqlite3.Connection, batch: list) -> None:
         # Prunes carry their own transaction, so run them outside the batch's
-        # `with conn:` rather than nesting transactions on the same connection.
+        # transaction rather than nesting transactions on the same connection.
         prunes = [obj for kind, obj in batch if kind == "prune"]
         batch = [item for item in batch if item[0] != "prune"]
 
-        try:
-            with conn:
-                for kind, obj in batch:
-                    if kind == "packet":
-                        self._write_packet(conn, obj)
-                    elif kind == "session":
-                        self._write_session(conn, obj)
-                    elif kind == "position":
-                        self._write_position(conn, obj)
-                    elif kind == "telemetry":
-                        self._write_telemetry(conn, obj)
-                    elif kind == "node":
-                        self._write_node(conn, obj)
-                    elif kind == "message":
-                        self._write_message(conn, obj)
-                    elif kind == "message_status":
-                        self._write_message_status(conn, obj)
-        except Exception as exc:
-            log.error("MonitorStore flush error: %s", exc)
+        if batch:
+            # Items _write_item_with_retry reports success for, in case the
+            # transaction as a whole later fails to commit (see below).
+            completed: list[tuple[str, Any]] = []
+            try:
+                with conn:
+                    # Explicit BEGIN so the SAVEPOINTs inside
+                    # _write_item_with_retry nest inside this transaction
+                    # rather than becoming outermost transactions themselves.
+                    # Python's sqlite3 only auto-issues BEGIN before DML;
+                    # SAVEPOINT is not DML, so without this the first
+                    # SAVEPOINT would open and immediately commit its own
+                    # transaction on RELEASE, destroying batch efficiency.
+                    conn.execute("BEGIN")
+                    for kind, obj in batch:
+                        if self._write_item_with_retry(conn, kind, obj):
+                            completed.append((kind, obj))
+            except Exception as exc:
+                # Reached only if something outside per-item handling broke
+                # — e.g. COMMIT itself failed (disk full). `with conn:`
+                # rolls back the ENTIRE transaction in that case, so every
+                # item that reported success above was actually lost too;
+                # re-record those as failed. Items _write_item_with_retry
+                # already recorded as failed are not touched again here.
+                log.error("MonitorStore flush error: %s", exc, exc_info=True)
+                self._record_error(str(exc))
+                for kind, obj in completed:
+                    self._record_failed_item(kind, exc)
 
         for retain_days in prunes:
             try:
