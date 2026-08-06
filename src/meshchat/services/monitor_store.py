@@ -414,8 +414,10 @@ class MonitorStore:
         conn.execute(
             """INSERT INTO nodes
             (node_num, node_id, long_name, short_name, role, hw_model,
-             first_seen, last_heard, packet_count, text_count)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+             first_seen, last_heard, packet_count, text_count,
+             last_snr, last_rssi, last_hops_used, last_hop_start, last_via_mqtt,
+             rf_count, via_mqtt_count, position_count, telemetry_count)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(node_num) DO UPDATE SET
                 node_id=excluded.node_id,
                 long_name=COALESCE(excluded.long_name, long_name),
@@ -436,12 +438,41 @@ class MonitorStore:
                 -- fields default to 0, never None), so a bare MAX is fine.
                 last_heard=COALESCE(MAX(excluded.last_heard, last_heard), excluded.last_heard, last_heard),
                 packet_count=MAX(excluded.packet_count, packet_count),
-                text_count=MAX(excluded.text_count, text_count)""",
+                text_count=MAX(excluded.text_count, text_count),
+                -- The last_* fields describe the single most recent packet,
+                -- not a running total — MAX() would be wrong here (e.g. a
+                -- fresher 0-hop packet must not lose to a staler 3-hop one
+                -- just because 3 > 0). Take them together only when this
+                -- write's last_heard is at least as new as what's stored,
+                -- so they always describe the same observation last_heard
+                -- itself was just updated to.
+                last_snr = CASE WHEN excluded.last_heard IS NOT NULL
+                    AND (last_heard IS NULL OR excluded.last_heard >= last_heard)
+                    THEN excluded.last_snr ELSE last_snr END,
+                last_rssi = CASE WHEN excluded.last_heard IS NOT NULL
+                    AND (last_heard IS NULL OR excluded.last_heard >= last_heard)
+                    THEN excluded.last_rssi ELSE last_rssi END,
+                last_hops_used = CASE WHEN excluded.last_heard IS NOT NULL
+                    AND (last_heard IS NULL OR excluded.last_heard >= last_heard)
+                    THEN excluded.last_hops_used ELSE last_hops_used END,
+                last_hop_start = CASE WHEN excluded.last_heard IS NOT NULL
+                    AND (last_heard IS NULL OR excluded.last_heard >= last_heard)
+                    THEN excluded.last_hop_start ELSE last_hop_start END,
+                last_via_mqtt = CASE WHEN excluded.last_heard IS NOT NULL
+                    AND (last_heard IS NULL OR excluded.last_heard >= last_heard)
+                    THEN excluded.last_via_mqtt ELSE last_via_mqtt END,
+                rf_count=MAX(excluded.rf_count, rf_count),
+                via_mqtt_count=MAX(excluded.via_mqtt_count, via_mqtt_count),
+                position_count=MAX(excluded.position_count, position_count),
+                telemetry_count=MAX(excluded.telemetry_count, telemetry_count)""",
             (
                 node.node_num, node.node_id, node.long_name, node.short_name,
                 node.role, node.hw_model,
                 _dt_str(node.first_seen), _dt_str(node.last_heard),
                 node.packet_count, node.text_count,
+                node.last_snr, node.last_rssi, node.last_hops_used, node.last_hop_start,
+                int(node.last_via_mqtt) if node.last_via_mqtt is not None else None,
+                node.rf_count, node.via_mqtt_count, node.position_count, node.telemetry_count,
             ),
         )
 

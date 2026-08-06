@@ -291,6 +291,25 @@ class MainWindow(QMainWindow):
             self._status_bar.showMessage("Nothing to export — no packets captured yet", 5000)
             return
 
+        # get_recent_packets() is backed by a bounded in-memory ring buffer
+        # (10,000 packets), not the full session history — on a long or
+        # busy session the buffer wraps and silently drops the oldest
+        # packets from every export with no indication anything was left
+        # out. Warn rather than let the export quietly look complete.
+        if self._session.packet_count > len(rows):
+            proceed = QMessageBox.question(
+                self,
+                "Partial Export",
+                f"This session has captured {self._session.packet_count} packets, but only "
+                f"the most recent {len(rows)} are kept in memory and available to export — "
+                f"the earliest {self._session.packet_count - len(rows)} will be missing.\n\n"
+                "Export the available packets anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if proceed != QMessageBox.StandardButton.Yes:
+                return
+
         path, _ = QFileDialog.getSaveFileName(
             self, "Export Packet Log", "meshchat-packets.csv", "CSV files (*.csv)"
         )

@@ -64,7 +64,21 @@ CREATE TABLE IF NOT EXISTS nodes (
     first_seen      TEXT,
     last_heard      TEXT,
     packet_count    INTEGER DEFAULT 0,
-    text_count      INTEGER DEFAULT 0
+    text_count      INTEGER DEFAULT 0,
+    -- Signal/hop/transport state of the most recently heard packet, plus
+    -- session-lifetime RF/MQTT/position/telemetry counters — previously
+    -- tracked only on the in-memory NodeSnapshot, so a node the app had
+    -- tracked for weeks started every restart with these reset to
+    -- zero/unknown until it was heard again live. See MonitorStore._write_node.
+    last_snr        REAL,
+    last_rssi       INTEGER,
+    last_hops_used  INTEGER,
+    last_hop_start  INTEGER,
+    last_via_mqtt   INTEGER,
+    rf_count        INTEGER DEFAULT 0,
+    via_mqtt_count  INTEGER DEFAULT 0,
+    position_count  INTEGER DEFAULT 0,
+    telemetry_count INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -155,3 +169,18 @@ def _migrate(conn) -> None:
         conn.execute("ALTER TABLE messages ADD COLUMN text TEXT")
     if "destination_num" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN destination_num INTEGER")
+
+    node_cols = {row[1] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+    for col, decl in (
+        ("last_snr", "REAL"),
+        ("last_rssi", "INTEGER"),
+        ("last_hops_used", "INTEGER"),
+        ("last_hop_start", "INTEGER"),
+        ("last_via_mqtt", "INTEGER"),
+        ("rf_count", "INTEGER DEFAULT 0"),
+        ("via_mqtt_count", "INTEGER DEFAULT 0"),
+        ("position_count", "INTEGER DEFAULT 0"),
+        ("telemetry_count", "INTEGER DEFAULT 0"),
+    ):
+        if col not in node_cols:
+            conn.execute(f"ALTER TABLE nodes ADD COLUMN {col} {decl}")
