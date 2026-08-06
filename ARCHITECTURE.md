@@ -50,6 +50,17 @@ actually shipped when.
   add another PubSub callback that mutates connection state based on an
   identity check, route it through `_claim_interface_if()`
   (or at minimum `self._interface_lock`), not a bare `is`/`is not` check.
+  Claiming is not the whole story if the callback does slow work (I/O)
+  after claiming, before touching state/signals: `_claim_interface_if()`
+  also returns a `_connect_generation` snapshot — a counter bumped inside
+  `_close_interface()` on every connect attempt's initial teardown and on
+  disconnect()/shutdown(), even when there was nothing to close. Re-compare
+  `self._connect_generation` against that snapshot immediately before any
+  state/signal side effect that follows slow work, the way
+  `_on_connection_lost` does after `interface.close()`. A plain
+  `self._interface is not None` check is not equivalent — it misses the
+  window where a reconnect's teardown has already run but its new
+  interface's constructor hasn't returned yet.
 
 ## Packet flow (the spine of the app)
 
