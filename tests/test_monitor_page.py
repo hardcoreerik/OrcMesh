@@ -17,7 +17,8 @@ from meshchat.models.node_snapshot import NodeSnapshot
 from meshchat.ui.monitor.monitor_page import MonitorPage, _matches_packet_type
 
 
-def _pkt(sender_num=1, portnum=1, via_mqtt=False, pki_encrypted=False, age_s=0) -> NetworkPacket:
+def _pkt(sender_num=1, portnum=1, via_mqtt=False, pki_encrypted=False, age_s=0,
+         rx_snr=None, rx_rssi=None) -> NetworkPacket:
     return NetworkPacket(
         session_id="s",
         observed_at=datetime.now(timezone.utc) - timedelta(seconds=age_s),
@@ -31,8 +32,8 @@ def _pkt(sender_num=1, portnum=1, via_mqtt=False, pki_encrypted=False, age_s=0) 
         portnum_name="",
         text=None,
         payload_size=None,
-        rx_snr=None,
-        rx_rssi=None,
+        rx_snr=rx_snr,
+        rx_rssi=rx_rssi,
         hop_start=3,
         hop_limit=3,
         hops_used=0,
@@ -97,7 +98,10 @@ class TestMonitorPageFilterWiring:
         assert senders == {1}, "5-minute age window must exclude the 2-hour-old packet"
         heard = {row._node_num for row in page._rank_last_heard._rows}
         assert heard == {1}, "5-minute age window must exclude the node last heard 2 hours ago"
-        assert page._card_total._value_lbl.text() == "1"
+        # Total is "all unique nodes seen this session or NodeDB" per the
+        # addendum spec — it must NOT shrink with the Age filter, unlike
+        # Last Heard/rankings above.
+        assert page._card_total._value_lbl.text() == "2"
 
     def test_all_age_keeps_everything(self):
         page = MonitorPage()
@@ -108,3 +112,32 @@ class TestMonitorPageFilterWiring:
         page._refresh_rankings()
         senders = {row._node_num for row in page._rank_most_pkts._rows}
         assert senders == {1, 2}
+
+    def test_direct_card_excludes_mqtt_bridged_zero_hop_nodes(self):
+        # Direct count must use NodeSnapshot.is_direct (which checks
+        # via_mqtt), not a re-derived hop condition that would silently
+        # drift from the Nodes table's own "Direct" column.
+        page = MonitorPage()
+        page.on_node_updated(NodeSnapshot(
+            node_num=1, last_hops_used=0, last_hop_start=3, last_via_mqtt=False,
+        ))
+        page.on_node_updated(NodeSnapshot(
+            node_num=2, last_hops_used=0, last_hop_start=3, last_via_mqtt=True,
+        ))
+        page._active_filter = {"age_s": None, "source": "All observed", "portnum": "All"}
+        page._refresh_rankings()
+        assert page._card_direct._value_lbl.text() == "1"
+
+    def test_signal_card_resets_when_filter_empties_direct_rf_samples(self):
+        # A stale median from a previous refresh must not linger once a
+        # Source/Type filter empties the direct-RF sample set entirely.
+        page = MonitorPage()
+        page.on_packet_ingested(_pkt(sender_num=1, via_mqtt=False, rx_snr=8.0, rx_rssi=-70))
+        page._active_filter = {"age_s": None, "source": "All observed", "portnum": "All"}
+        page._refresh_rankings()
+        assert page._card_signal._rows["RSSI"].text() != "—"
+
+        page._active_filter = {"age_s": None, "source": "MQTT-path", "portnum": "All"}
+        page._refresh_rankings()
+        assert page._card_signal._rows["SNR"].text() == "—"
+        assert page._card_signal._rows["RSSI"].text() == "—"
