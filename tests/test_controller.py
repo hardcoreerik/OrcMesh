@@ -282,3 +282,41 @@ class TestConnectionLost:
         assert not new_iface._closed, "Replacement interface must not be closed"
         assert not old_iface._closed, "Stale event only ever no-ops, never closes anything"
         assert worker._interface is new_iface
+
+    def test_reconnect_during_close_suppresses_the_stale_error_report(self):
+        # A legitimately claimed loss event (old_iface really was the
+        # active interface when the event fired) still shouldn't report
+        # ERROR if, by the time interface.close() returns, a reconnect has
+        # already installed and is using a new interface — close() can
+        # block on I/O, and Connect is allowed again as soon as state is
+        # ERROR. Simulate the reconnect landing during close() itself.
+        from meshchat.controllers.meshtastic_controller import MeshtasticWorker
+        from tests.fakes.fake_meshtastic_interface import FakeMeshtasticInterface
+
+        worker = MeshtasticWorker()
+        old_iface = FakeMeshtasticInterface()
+        new_iface = FakeMeshtasticInterface()
+        worker._interface = old_iface
+
+        orig_close = old_iface.close
+
+        def _close_and_reconnect():
+            orig_close()
+            worker._set_interface(new_iface)  # reconnect lands mid-close
+
+        old_iface.close = _close_and_reconnect
+
+        states = []
+        disconnected = []
+        errors = []
+        worker._set_state = lambda *a, **k: states.append((a, k))
+        worker.disconnected.connect(disconnected.append)
+        worker.error_occurred.connect(errors.append)
+
+        worker._on_connection_lost(interface=old_iface)
+
+        assert old_iface._closed
+        assert states == [], "Must not report ERROR once a successor interface exists"
+        assert disconnected == [], "Must not emit disconnected for a superseded connection"
+        assert errors == [], "Must not emit an error for a superseded connection"
+        assert worker._interface is new_iface, "The reconnect's interface must survive untouched"

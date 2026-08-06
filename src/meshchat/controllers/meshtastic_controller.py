@@ -431,7 +431,6 @@ class MeshtasticWorker(QObject):
         # call is the exclusive owner of tearing down exactly `interface`.
         if not self._claim_interface_if(interface):
             return
-        self._set_state(ConnectionState.ERROR, "Connection lost")
         # Every other path that ends a connection (disconnect(), a failed
         # (re)connect attempt) calls _close_interface() — this one didn't,
         # leaving the dead interface's background reader thread and
@@ -440,10 +439,29 @@ class MeshtasticWorker(QObject):
         # internally, so calling it on an interface that's already failing
         # is safe. self._interface is already cleared by the claim above,
         # so this only closes `interface` itself — never a replacement.
+        #
+        # Close BEFORE touching state/signals: close() can do blocking I/O,
+        # and Connect is allowed again as soon as state is ERROR. If the
+        # state/signal side effects ran first, a reconnect could land
+        # during the close() and reach CONNECTED — then this stale event's
+        # emits would fire afterward and stomp that live connection's UI
+        # state. Closing first, then re-checking for a successor right
+        # before the state/signal side effects, keeps that window closed.
         try:
             interface.close()
         except Exception as exc:
             log.warning("Closing the radio interface failed: %s", exc)
+
+        with self._interface_lock:
+            superseded = self._interface is not None
+        if superseded:
+            # A reconnect already installed a new interface while this
+            # event was being handled — that connect owns reporting its
+            # own state now; an ERROR report for the interface just closed
+            # would be stale and would misreport the new connection.
+            return
+
+        self._set_state(ConnectionState.ERROR, "Connection lost")
         self.disconnected.emit("Radio connection lost")
         self._emit_error(
             ErrorCode.CONNECTION_LOST,
@@ -577,11 +595,11 @@ class MeshtasticWorker(QObject):
         self._set_state(ConnectionState.CONNECTING, address)
         try:
             from meshtastic.ble_interface import BLEInterface
-            self._interface = BLEInterface(address=address, timeout=45)
+            self._set_interface(BLEInterface(address=address, timeout=45))
             self._set_state(ConnectionState.SYNCING, "Downloading radio configuration…")
         except Exception as exc:
             log.exception("BLE connect failed")
-            self._interface = None
+            self._set_interface(None)
             self._set_state(ConnectionState.ERROR, str(exc))
             self._set_state(ConnectionState.DISCONNECTED)
             if _is_pairing_error(exc):
@@ -632,7 +650,7 @@ class MeshtasticWorker(QObject):
         self._set_state(ConnectionState.CONNECTING, f"{host}:{port}")
         try:
             from meshtastic.tcp_interface import TCPInterface
-            self._interface = TCPInterface(hostname=host, portNumber=port, timeout=45)
+            self._set_interface(TCPInterface(hostname=host, portNumber=port, timeout=45))
             self._set_state(ConnectionState.SYNCING, "Downloading radio configuration…")
         except OSError as exc:
             log.exception("TCP connect failed: %s", exc)
@@ -648,13 +666,13 @@ class MeshtasticWorker(QObject):
             elif "name or service" in detail.lower() or "nodename" in detail.lower():
                 code = ErrorCode.TCP_HOST_NOT_FOUND
                 msg = f"Host not found: {host}. Try an IP address if .local resolution is unavailable."
-            self._interface = None
+            self._set_interface(None)
             self._set_state(ConnectionState.ERROR, detail)
             self._set_state(ConnectionState.DISCONNECTED)
             self._emit_error(code, title, msg, True, detail)
         except Exception as exc:
             log.exception("TCP connect unexpected error")
-            self._interface = None
+            self._set_interface(None)
             self._set_state(ConnectionState.ERROR, str(exc))
             self._set_state(ConnectionState.DISCONNECTED)
             self._emit_error(ErrorCode.INTERNAL_ERROR, "Connection Error", str(exc), True)
@@ -698,11 +716,11 @@ class MeshtasticWorker(QObject):
         self._set_state(ConnectionState.CONNECTING, port)
         try:
             from meshtastic.serial_interface import SerialInterface
-            self._interface = SerialInterface(devPath=port, timeout=45)
+            self._set_interface(SerialInterface(devPath=port, timeout=45))
             self._set_state(ConnectionState.SYNCING, "Downloading radio configuration…")
         except Exception as exc:
             log.exception("Serial connect failed")
-            self._interface = None
+            self._set_interface(None)
             self._set_state(ConnectionState.ERROR, str(exc))
             self._set_state(ConnectionState.DISCONNECTED)
             self._emit_error(
@@ -926,6 +944,20 @@ class MeshtasticWorker(QObject):
                 iface.close()
             except Exception as exc:
                 log.warning("Closing the radio interface failed: %s", exc)
+
+    def _set_interface(self, iface: object | None) -> None:
+        """Assign self._interface under the lock.
+
+        The connect slots (connect_ble/tcp/serial) run only on this
+        worker's own thread, so they never race each other — but the
+        assignment itself still needs the lock so it can't interleave with
+        a concurrent _claim_interface_if/_close_interface call from a
+        PubSub callback on the meshtastic library's thread. Call this with
+        the already-constructed interface (or None); the slow interface
+        constructor itself should run *before* this call, not inside it.
+        """
+        with self._interface_lock:
+            self._interface = iface
 
     def _claim_interface_if(self, expected: object) -> bool:
         """Atomically clear self._interface iff it is still `expected`.
