@@ -223,10 +223,13 @@ def _device_summary(interface) -> DeviceSummary:
         fw = getattr(metadata, "firmware_version", None) if metadata else None
         nodes_by_num = getattr(interface, "nodesByNum", {}) or {}
         local_num = getattr(my_info, "my_node_num", None)
-        node_info = nodes_by_num.get(local_num, {}) if local_num else {}
+        # local_num is not None, not `if local_num`: node_num == 0 is a
+        # legitimate (if unusual) node number — see the matching fix in
+        # _on_text_received's sender_num handling.
+        node_info = nodes_by_num.get(local_num, {}) if local_num is not None else {}
         user = node_info.get("user", {}) if isinstance(node_info, dict) else {}
         return DeviceSummary(
-            node_id=user.get("id") or (f"!{local_num:08x}" if local_num else None),
+            node_id=user.get("id") or (f"!{local_num:08x}" if local_num is not None else None),
             long_name=user.get("longName"),
             short_name=user.get("shortName"),
             hw_model=user.get("hwModel"),
@@ -486,7 +489,11 @@ class MeshtasticWorker(QObject):
 
             # A packet addressed to us specifically (not the broadcast address)
             # is a direct message; group it under the sender's conversation.
-            to_num = packet.get("to") or packet.get("toNum")
+            # packet.get("to") if not None, not `or`: a genuine to == 0 must
+            # not fall through to toNum — see node_num==0 handling above.
+            to_num = packet.get("to")
+            if to_num is None:
+                to_num = packet.get("toNum")
             destination_num = sender_num if to_num not in (None, BROADCAST_NUM) else None
 
             msg = ChatMessage(

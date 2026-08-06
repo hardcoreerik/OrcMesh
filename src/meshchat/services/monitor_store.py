@@ -244,12 +244,24 @@ class MonitorStore:
         return rows[0] if rows else None
 
     def read_messages(self, limit: int = 5000) -> list[dict]:
-        """All persisted chat messages (channel broadcasts and direct messages),
-        oldest first, across all sessions — chat history survives app restarts."""
+        """The most recent `limit` persisted chat messages (channel broadcasts
+        and direct messages), across all sessions, returned oldest-first —
+        chat history survives app restarts.
+
+        Selects the newest rows first (by observed_at, with rowid as a
+        deterministic tiebreaker for messages sharing a timestamp), then
+        re-sorts that selection into chronological order. Selecting oldest
+        first and capping with LIMIT would silently drop every message newer
+        than the cutoff once the table exceeds `limit` rows — the opposite of
+        what a bounded history load should do.
+        """
         try:
             conn = self._read_conn()
             rows = conn.execute(
-                "SELECT * FROM messages ORDER BY observed_at ASC LIMIT ?", (limit,)
+                """SELECT * FROM (
+                    SELECT * FROM messages ORDER BY observed_at DESC, rowid DESC LIMIT ?
+                ) ORDER BY observed_at ASC, rowid ASC""",
+                (limit,),
             ).fetchall()
             conn.close()
             return [dict(r) for r in rows]
