@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import shutil
 import sqlite3
 import threading
 import time
@@ -411,6 +412,59 @@ class MonitorStore:
         self._writer.join(timeout=timeout)
 
     # ------------------------------------------------------------------
+    # Maintenance API
+    # ------------------------------------------------------------------
+
+    def check_integrity(self) -> tuple[bool, str]:
+        """Run PRAGMA integrity_check and return (ok, detail).
+
+        Opens its own read connection — safe to call from any thread at any
+        time. Returns (True, "ok") on a clean database, or (False, <detail>)
+        when corruption is detected. The detail string comes straight from
+        SQLite and can be surfaced to the user as-is.
+        """
+        try:
+            conn = self._read_conn()
+            detail = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            conn.close()
+            return detail == "ok", detail
+        except Exception as exc:
+            return False, str(exc)
+
+    def backup(self, dest: Path | None = None, timeout: float = 30.0) -> Path:
+        """Flush all pending writes, checkpoint the WAL, and copy the database.
+
+        Blocks until the backup file is written. `dest` is the target path;
+        when omitted a timestamped file is created in a `backups/` subfolder
+        next to the live database. Returns the path that was written.
+
+        Raises RuntimeError if the writer thread is not alive (no pending
+        writes to flush, but the WAL checkpoint can't run), or if the
+        backup does not complete within `timeout` seconds.
+        """
+        if not self._writer.is_alive():
+            raise RuntimeError("Writer thread is not alive; cannot take a consistent backup")
+        done = threading.Event()
+        result: list[Path | Exception] = []
+        self._enqueue(("backup", (dest, done, result)))
+        if not done.wait(timeout=timeout):
+            raise RuntimeError(f"Backup did not complete within {timeout}s — writer may be unresponsive")
+        if result and isinstance(result[0], Exception):
+            raise result[0]
+        assert isinstance(result[0], Path)
+        return result[0]
+
+    def vacuum_async(self) -> None:
+        """Checkpoint the WAL and run VACUUM to reclaim disk space after pruning.
+
+        Queued through the writer thread so it runs after all pending writes.
+        VACUUM rewrites the entire database file; on large databases this can
+        take several seconds. Any error is logged and silently swallowed —
+        VACUUM is best-effort maintenance, not a data-safety operation.
+        """
+        self._enqueue(("vacuum", None))
+
+    # ------------------------------------------------------------------
     # Private writer loop
     # ------------------------------------------------------------------
 
@@ -495,10 +549,14 @@ class MonitorStore:
                 return False
 
     def _flush(self, conn: sqlite3.Connection, batch: list) -> None:
-        # Prunes carry their own transaction, so run them outside the batch's
-        # transaction rather than nesting transactions on the same connection.
+        # Prunes, backups, and vacuums each carry their own transaction (or
+        # none at all), so pull them out and run them outside the batch's
+        # main transaction rather than nesting on the same connection.
+        maintenance_kinds = {"prune", "backup", "vacuum"}
         prunes = [obj for kind, obj in batch if kind == "prune"]
-        batch = [item for item in batch if item[0] != "prune"]
+        backups = [obj for kind, obj in batch if kind == "backup"]
+        vacuums = [obj for kind, obj in batch if kind == "vacuum"]
+        batch = [item for item in batch if item[0] not in maintenance_kinds]
 
         if batch:
             # Items _write_item_with_retry reports success for, in case the
@@ -529,11 +587,43 @@ class MonitorStore:
                 for kind, obj in completed:
                     self._record_failed_item(kind, exc)
 
+        # Backups run after the batch commits so the copy includes whatever
+        # was just written. The done event is always set — even on error —
+        # so backup() never hangs waiting.
+        for dest, done, result in backups:
+            try:
+                result.append(self._do_backup(conn, dest))
+            except Exception as exc:
+                result.append(exc)
+            finally:
+                done.set()
+
+        for _ in vacuums:
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("VACUUM")
+                log.info("MonitorStore VACUUM complete")
+            except Exception as exc:
+                log.error("MonitorStore vacuum failed: %s", exc)
+
         for retain_days in prunes:
             try:
                 self._prune_on(conn, retain_days)
             except Exception as exc:
                 log.error("MonitorStore prune failed: %s", exc)
+
+    def _do_backup(self, conn: sqlite3.Connection, dest: Path | None) -> Path:
+        if dest is None:
+            backup_dir = self._path.parent / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            dest = backup_dir / f"{self._path.stem}.manual.{stamp}{self._path.suffix}"
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        shutil.copy2(self._path, dest)
+        log.info("MonitorStore backup written to %s", dest)
+        return dest
 
     def _write_packet(self, conn: sqlite3.Connection, pkt: NetworkPacket) -> None:
         # Plain INSERT, not "OR IGNORE": the packets table's only key is its
