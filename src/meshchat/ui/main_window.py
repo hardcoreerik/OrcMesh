@@ -67,7 +67,14 @@ class _PacketExportWorker(QObject):
                 self._rows, self._path, include_text=self._include_text,
             )
             self.finished.emit(count)
-        except OSError as exc:
+        except Exception as exc:
+            # Not narrowed to OSError: any uncaught exception here would
+            # otherwise leave this slot without ever emitting finished/
+            # failed, so the caller's thread.quit() (only wired to those
+            # two signals) never runs — the worker thread's event loop
+            # stays up forever and the Export menu action stays disabled
+            # for the rest of the session.
+            log.exception("Packet export worker failed")
             self.failed.emit(str(exc))
 
 
@@ -383,9 +390,13 @@ class MainWindow(QMainWindow):
         # CSV-formatting and writing up to 200,000 rows is real, unbounded
         # disk I/O — done on a background QThread so it can't freeze the
         # GUI (input, repaints) for as long as it takes on a large session.
+        # Not parented to `self`/MainWindow: run() is a blocking write, so
+        # if the window closes before it finishes, closeEvent must be able
+        # to wait it out without this thread being a child object Qt might
+        # try to tear down mid-run.
         self._status_bar.showMessage(f"Exporting {len(rows)} packet(s)…")
         self._export_pkts_act.setEnabled(False)
-        self._export_thread = QThread(self)
+        self._export_thread = QThread()
         self._export_worker = _PacketExportWorker(rows, Path(path), include_text)
         self._export_worker.moveToThread(self._export_thread)
         self._export_thread.started.connect(self._export_worker.run)
@@ -393,6 +404,14 @@ class MainWindow(QMainWindow):
         self._export_worker.failed.connect(self._on_packet_export_failed)
         self._export_worker.finished.connect(self._export_thread.quit)
         self._export_worker.failed.connect(self._export_thread.quit)
+        # deleteLater from the object's OWN thread while its event loop is
+        # still running it (worker: still on _export_thread when finished/
+        # failed fires; thread: on the GUI thread when its `finished` fires)
+        # — not from _on_packet_export_thread_finished after the fact, which
+        # runs after the worker's thread affinity/event loop is already gone.
+        self._export_worker.finished.connect(self._export_worker.deleteLater)
+        self._export_worker.failed.connect(self._export_worker.deleteLater)
+        self._export_thread.finished.connect(self._export_thread.deleteLater)
         self._export_thread.finished.connect(self._on_packet_export_thread_finished)
         self._export_thread.start()
 
@@ -405,14 +424,11 @@ class MainWindow(QMainWindow):
 
     def _on_packet_export_thread_finished(self) -> None:
         # Runs after both finished/failed have already updated the status
-        # bar — this only tears down the thread/worker and re-enables the
-        # menu action, regardless of which outcome occurred.
-        if self._export_worker is not None:
-            self._export_worker.deleteLater()
-            self._export_worker = None
-        if self._export_thread is not None:
-            self._export_thread.deleteLater()
-            self._export_thread = None
+        # bar — this only clears the tracking references and re-enables the
+        # menu action, regardless of which outcome occurred. deleteLater
+        # for both objects is already wired above; don't call it again here.
+        self._export_worker = None
+        self._export_thread = None
         self._export_pkts_act.setEnabled(True)
 
     def _export_nodes(self) -> None:
@@ -715,9 +731,16 @@ class MainWindow(QMainWindow):
         self._controller.shutdown()
         self._store.shutdown()
         if self._export_thread is not None:
-            # Closing mid-export: wait for the write to finish rather than
-            # destroying a still-running QThread out from under it (which
-            # Qt warns about and can crash on some platforms).
-            self._export_thread.quit()
-            self._export_thread.wait(5000)
+            # Closing mid-export: block until the write actually finishes
+            # rather than destroying a still-running QThread out from under
+            # it, which Qt warns about and can crash on some platforms.
+            # thread.quit() alone would not help here — run() is a
+            # synchronous blocking write; the thread's event loop (and so
+            # the finished/failed-triggered quit()) only gets a chance to
+            # act once run() itself returns. A short bounded wait() risks
+            # exactly the crash this is trying to avoid on a large export,
+            # so this waits as long as it actually takes.
+            if not self._export_thread.wait(5000):
+                log.warning("Waiting for an in-progress packet export to finish before closing…")
+                self._export_thread.wait()
         super().closeEvent(event)
