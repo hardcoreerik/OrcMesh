@@ -289,7 +289,11 @@ class TestConnectionLost:
         # ERROR if, by the time interface.close() returns, a reconnect has
         # already installed and is using a new interface — close() can
         # block on I/O, and Connect is allowed again as soon as state is
-        # ERROR. Simulate the reconnect landing during close() itself.
+        # ERROR. Simulate the reconnect landing during close() itself, the
+        # same way a real connect_ble/tcp/serial does: _close_interface()
+        # first (bumps the connect generation — the claimed report compares
+        # against this), then _set_interface() once the new interface is
+        # constructed.
         from meshchat.controllers.meshtastic_controller import MeshtasticWorker
         from tests.fakes.fake_meshtastic_interface import FakeMeshtasticInterface
 
@@ -302,7 +306,8 @@ class TestConnectionLost:
 
         def _close_and_reconnect():
             orig_close()
-            worker._set_interface(new_iface)  # reconnect lands mid-close
+            worker._close_interface()  # reconnect's own teardown-of-prior step
+            worker._set_interface(new_iface)  # ...then the new interface lands
 
         old_iface.close = _close_and_reconnect
 
@@ -320,3 +325,41 @@ class TestConnectionLost:
         assert disconnected == [], "Must not emit disconnected for a superseded connection"
         assert errors == [], "Must not emit an error for a superseded connection"
         assert worker._interface is new_iface, "The reconnect's interface must survive untouched"
+
+    def test_reconnect_still_mid_connect_suppresses_the_stale_error_report(self):
+        # Same as above, but the reconnect's own interface constructor
+        # hasn't returned yet when close() finishes — self._interface is
+        # still None at that instant (only _close_interface() ran, not yet
+        # _set_interface()). A plain "self._interface is not None" gate
+        # would miss this and misreport a live-in-progress reconnect as
+        # lost; the generation counter (bumped by _close_interface() even
+        # when there was nothing to close) catches it regardless.
+        from meshchat.controllers.meshtastic_controller import MeshtasticWorker
+        from tests.fakes.fake_meshtastic_interface import FakeMeshtasticInterface
+
+        worker = MeshtasticWorker()
+        old_iface = FakeMeshtasticInterface()
+        worker._interface = old_iface
+
+        orig_close = old_iface.close
+
+        def _close_and_start_reconnecting():
+            orig_close()
+            worker._close_interface()  # reconnect's teardown step only —
+            # the new interface's constructor is still "in flight" here
+
+        old_iface.close = _close_and_start_reconnecting
+
+        states = []
+        disconnected = []
+        errors = []
+        worker._set_state = lambda *a, **k: states.append((a, k))
+        worker.disconnected.connect(disconnected.append)
+        worker.error_occurred.connect(errors.append)
+
+        worker._on_connection_lost(interface=old_iface)
+
+        assert worker._interface is None, "Sanity check: mid-connect, no interface yet"
+        assert states == [], "Must not report ERROR for a reconnect still in flight"
+        assert disconnected == []
+        assert errors == []

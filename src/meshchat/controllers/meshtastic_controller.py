@@ -324,6 +324,10 @@ class MeshtasticWorker(QObject):
         # meshtastic library's own background reader thread, not this
         # worker's thread — see _claim_interface_if.
         self._interface_lock = threading.Lock()
+        # Bumped by every _close_interface() call (i.e. every connect
+        # attempt's teardown of whatever came before it, plus disconnect()
+        # and shutdown()) — see _on_connection_lost's post-close gate.
+        self._connect_generation = 0
 
     # -----------------------------------------------------------------------
     # State helpers
@@ -429,7 +433,8 @@ class MeshtasticWorker(QObject):
         # this event is actually about. _claim_interface_if makes the
         # check-and-clear atomic: every side effect below only runs if this
         # call is the exclusive owner of tearing down exactly `interface`.
-        if not self._claim_interface_if(interface):
+        claimed, generation = self._claim_interface_if(interface)
+        if not claimed:
             return
         # Every other path that ends a connection (disconnect(), a failed
         # (re)connect attempt) calls _close_interface() — this one didn't,
@@ -453,12 +458,17 @@ class MeshtasticWorker(QObject):
             log.warning("Closing the radio interface failed: %s", exc)
 
         with self._interface_lock:
-            superseded = self._interface is not None
+            superseded = self._connect_generation != generation
         if superseded:
-            # A reconnect already installed a new interface while this
-            # event was being handled — that connect owns reporting its
-            # own state now; an ERROR report for the interface just closed
-            # would be stale and would misreport the new connection.
+            # Something else already tore down or replaced the connection
+            # while this event was being handled — a new connect attempt
+            # (even one whose interface constructor hasn't returned yet),
+            # or the user disconnecting. Comparing generations (bumped by
+            # every _close_interface() call) catches that even when
+            # self._interface happens to be None at this exact instant,
+            # which a plain "is not None" check would miss. Whatever now
+            # owns the connection reports its own state; an ERROR report
+            # for the interface just closed here would be stale.
             return
 
         self._set_state(ConnectionState.ERROR, "Connection lost")
@@ -935,10 +945,17 @@ class MeshtasticWorker(QObject):
         # lock: without it, this read-then-clear could interleave with
         # _claim_interface_if's read-then-clear (called from a PubSub
         # callback on the meshtastic library's own thread) and double-close
-        # or lose track of an interface.
+        # or lose track of an interface. Bumping the generation here —
+        # unconditionally, even if there was nothing to close — marks a new
+        # epoch on every connect attempt's initial teardown and on
+        # disconnect()/shutdown(), so a connection-lost report claimed
+        # before this call can detect it was superseded even if the actual
+        # interface reference happens to still be None when it checks (see
+        # _on_connection_lost's post-close gate).
         with self._interface_lock:
             iface = self._interface
             self._interface = None
+            self._connect_generation += 1
         if iface is not None:
             try:
                 iface.close()
@@ -959,7 +976,7 @@ class MeshtasticWorker(QObject):
         with self._interface_lock:
             self._interface = iface
 
-    def _claim_interface_if(self, expected: object) -> bool:
+    def _claim_interface_if(self, expected: object) -> tuple[bool, int]:
         """Atomically clear self._interface iff it is still `expected`.
 
         Used by PubSub callbacks (meshtastic.connection.lost) that run on
@@ -969,16 +986,21 @@ class MeshtasticWorker(QObject):
         check and the act where a reconnect can install a replacement
         interface — closing or state-changing based on the stale check
         would then tear down or misreport the live connection. This makes
-        the check-and-claim a single atomic step: if it returns True, the
-        caller now exclusively owns tearing down exactly `expected` (never
-        a replacement), and self._interface is already cleared for the
-        next connect. If it returns False, the event is stale — no-op.
+        the check-and-claim a single atomic step: if it returns
+        `(True, generation)`, the caller now exclusively owns tearing down
+        exactly `expected` (never a replacement), self._interface is
+        already cleared for the next connect, and `generation` is the
+        connect-epoch snapshot the caller should compare against
+        `self._connect_generation` after any slow work (like closing the
+        interface) before acting on state/signals — see
+        _on_connection_lost. If it returns `(False, ...)`, the event was
+        already stale at claim time — no-op.
         """
         with self._interface_lock:
             if self._interface is not expected:
-                return False
+                return False, self._connect_generation
             self._interface = None
-            return True
+            return True, self._connect_generation
 
     def _emit_error(
         self,
