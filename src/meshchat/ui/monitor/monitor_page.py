@@ -414,8 +414,17 @@ class MonitorPage(QWidget):
                 farthest = max(distances, key=lambda x: x[1])
                 self._card_closest.set_value(format_distance(closest[1]))
                 self._card_farthest.set_value(format_distance(farthest[1]))
+            else:
+                # Same class of bug as Signal above: age-scoping can empty
+                # `distances` on a later refresh (e.g. every positioned node
+                # aged out) while a previous refresh's values would
+                # otherwise stick around looking current.
+                self._card_closest.set_value("—")
+                self._card_farthest.set_value("—")
         else:
             self._rank_nearby.update_rows([])
+            self._card_closest.set_value("—")
+            self._card_farthest.set_value("—")
 
         # Strongest / Weakest Direct — best SNR per node (gathered above)
         sorted_snr = sorted(direct_snr.items(), key=lambda x: x[1],

@@ -141,3 +141,33 @@ class TestMonitorPageFilterWiring:
         page._refresh_rankings()
         assert page._card_signal._rows["SNR"].text() == "—"
         assert page._card_signal._rows["RSSI"].text() == "—"
+
+    def test_closest_farthest_reset_when_age_ages_out_every_positioned_node(self):
+        # Same class of bug as the Signal card: age-scoping Nearby/Farthest
+        # can empty `distances` on a later refresh, and without an explicit
+        # reset the previous refresh's Closest/Farthest values stick.
+        from meshchat.models.position_sample import PositionSample
+
+        page = MonitorPage()
+        page.set_local_node(1)
+        page.on_position_updated(PositionSample(
+            node_num=1, observed_at=datetime.now(timezone.utc),
+            latitude=45.0, longitude=-122.0,
+        ))
+        page.on_position_updated(PositionSample(
+            node_num=2, observed_at=datetime.now(timezone.utc),
+            latitude=45.1, longitude=-122.1,
+        ))
+        page.on_node_updated(NodeSnapshot(node_num=1, last_heard=datetime.now(timezone.utc)))
+        page.on_node_updated(NodeSnapshot(
+            node_num=2, last_heard=datetime.now(timezone.utc) - timedelta(seconds=7200),
+        ))
+
+        page._active_filter = {"age_s": None, "source": "All observed", "portnum": "All"}
+        page._refresh_rankings()
+        assert page._card_closest._value_lbl.text() != "—"
+
+        page._active_filter = {"age_s": 300, "source": "All observed", "portnum": "All"}
+        page._refresh_rankings()
+        assert page._card_closest._value_lbl.text() == "—"
+        assert page._card_farthest._value_lbl.text() == "—"
