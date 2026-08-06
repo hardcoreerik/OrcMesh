@@ -37,7 +37,9 @@ below — they're cited here for provenance, not as a dependency.
 - GPL-3.0 relicense (required once linking the GPL-3.0-only `meshtastic`
   package — see [ARCHITECTURE.md](ARCHITECTURE.md))
 - Optional RTL-SDR spectrum waterfall, with Meshtastic + MeshCore-aware
-  frequency-band markers (`analytics/lora_bands.py`)
+  frequency-band markers (`analytics/lora_bands.py`), plus a manual
+  custom-frequency marker for meshes that override to a fixed frequency
+  instead of a computed channel slot (e.g. MeshOregon's published config)
 - v0.1.0-alpha public release
 - v0.1.1-alpha release — the `VERSION` `ImportError` crash fix (Help →
   About, diagnostic copy, session export) had been on `main` since PR #2

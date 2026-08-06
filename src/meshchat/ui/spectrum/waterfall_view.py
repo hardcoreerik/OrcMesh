@@ -103,29 +103,40 @@ class WaterfallView(QWidget):
     # Channel markers
     # ------------------------------------------------------------------
 
-    def set_markers(self, markers) -> None:
+    def set_markers(self, markers, custom_markers=()) -> None:
         """Overlay where known mesh channels sit in the band.
 
         `markers` is a sequence of analytics.lora_bands.ChannelMarker.
         Each is drawn as a shaded band the width of its LoRa bandwidth, so
         you can see whether the energy in the waterfall lines up with a
-        channel the mesh actually uses.
+        channel the mesh actually uses. `custom_markers` is the subset of
+        `markers` that the user added manually (e.g. a fixed-frequency
+        override that isn't derivable from any channel/preset math) — drawn
+        in amber to distinguish them from computed slots.
         """
         for item in self._marker_items:
             self._plot.removeItem(item)
         self._marker_items.clear()
 
+        custom_set = set(custom_markers)
         for m in markers:
             center = m.center_mhz * 1e6
             half = (m.bandwidth_khz * 1e3) / 2
             label_lower = m.label.lower()
             is_active = "active" in label_lower or "nominal" in label_lower
+            is_custom = m in custom_set
+
+            if is_custom:
+                color = "#FFB800"
+            elif is_active:
+                color = "#00D4FF"
+            else:
+                color = "#3A4870"
 
             region = pg.LinearRegionItem(
                 values=(center - half, center + half),
-                brush=pg.mkBrush(0, 212, 255, 45 if is_active else 18),
-                pen=pg.mkPen("#00D4FF" if is_active else "#3A4870",
-                             width=2 if is_active else 1),
+                brush=pg.mkBrush(*pg.mkColor(color).getRgb()[:3], 45 if (is_active or is_custom) else 18),
+                pen=pg.mkPen(color, width=2 if (is_active or is_custom) else 1),
                 movable=False,
             )
             region.setZValue(10)
@@ -134,7 +145,7 @@ class WaterfallView(QWidget):
 
             label = pg.TextItem(
                 m.label,
-                color="#00D4FF" if is_active else "#5A6690",
+                color=color if (is_active or is_custom) else "#5A6690",
                 anchor=(0.5, 0),
             )
             label.setPos(center, 0)
