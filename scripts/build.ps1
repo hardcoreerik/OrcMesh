@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build MeshChat for Windows as a standalone executable.
+    Build OrcMesh for Windows as a standalone executable.
 .PARAMETER SkipTests
     Skip the test suite (not recommended for release builds).
 .PARAMETER NoUpx
@@ -43,7 +43,7 @@ if (Test-Path "dist")  { Remove-Item -Recurse -Force dist  }
 
 # ── PyInstaller ─────────────────────────────────────────────────────────────
 Write-Host "==> Running PyInstaller..." -ForegroundColor Cyan
-$specArgs = @("packaging\meshchat.spec", "--clean", "--noconfirm")
+$specArgs = @("packaging\orcmesh.spec", "--clean", "--noconfirm")
 if ($NoUpx) { $specArgs += "--noupx" }
 
 & ".\.venv\Scripts\pyinstaller.exe" @specArgs
@@ -54,7 +54,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # ── Post-build: copy QtWebEngineProcess.exe if PyInstaller missed it ────────
 Write-Host "==> Post-build checks..." -ForegroundColor Cyan
-$distDir = "dist\MeshChat"
+$distDir = "dist\OrcMesh"
 $pyside6Src = & ".\.venv\Scripts\python.exe" -c "import PySide6, os; print(os.path.dirname(PySide6.__file__))"
 
 # QtWebEngineProcess.exe — must be in the root of the dist folder on Windows
@@ -72,12 +72,12 @@ if ((Test-Path $icuDat) -and -not (Test-Path "$distDir\icudtl.dat")) {
 }
 
 # ── Verify ──────────────────────────────────────────────────────────────────
-if (Test-Path "$distDir\MeshChat.exe") {
-    $size = (Get-Item "$distDir\MeshChat.exe").Length / 1MB
+if (Test-Path "$distDir\OrcMesh.exe") {
+    $size = (Get-Item "$distDir\OrcMesh.exe").Length / 1MB
     Write-Host ""
-    Write-Host ("==> Build successful: $distDir\MeshChat.exe ({0:F1} MB)" -f $size) -ForegroundColor Green
+    Write-Host ("==> Build successful: $distDir\OrcMesh.exe ({0:F1} MB)" -f $size) -ForegroundColor Green
     Write-Host "    Full dist directory: $((Get-Item $distDir).FullName)"
 } else {
-    Write-Error "Build failed — MeshChat.exe not found in dist\"
+    Write-Error "Build failed — OrcMesh.exe not found in dist\"
     exit 1
 }

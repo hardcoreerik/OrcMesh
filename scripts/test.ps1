@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Run the MeshChat test suite.
+    Run the OrcMesh test suite.
 .PARAMETER Fast
     Skip slow integration tests (marked with @pytest.mark.slow).
 .PARAMETER Args

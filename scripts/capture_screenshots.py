@@ -67,8 +67,8 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
-    app.setOrganizationName("MeshChat")
-    app.setApplicationName("MeshChat")
+    app.setOrganizationName("OrcMesh")
+    app.setApplicationName("OrcMesh")
 
     from meshchat.ui.theme import global_stylesheet
     app.setStyleSheet(global_stylesheet())

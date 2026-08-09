@@ -1,8 +1,6 @@
 """Tests for MonitorStore get_setting / set_setting (app_settings table)."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from meshchat.services.monitor_store import MonitorStore

@@ -3,7 +3,7 @@
 Status: **exploratory — no implementation started.** This document captures the
 research and open decisions from an initial discussion about bringing
 [MCoreIMG](https://github.com/Aaron-KE9ETA/MCoreIMG) (a compact vector-image
-transport protocol built for MeshCore) into MeshChat.
+transport protocol built for MeshCore) into OrcMesh.
 
 ---
 
@@ -56,12 +56,12 @@ MIT. No legal obstacle to forking or vendoring any part of it.
 
 MCoreIMG's framing constants are tuned to MeshCore's transport:
 
-| | MeshCore (MCoreIMG's target) | Meshtastic (MeshChat's target) |
+| | MeshCore (MCoreIMG's target) | Meshtastic (OrcMesh's target) |
 |---|---|---|
-| Message size limit | 150 characters | 200 **bytes** (UTF-8; MeshChat already enforces this in the composer) |
+| Message size limit | 150 characters | 200 **bytes** (UTF-8; OrcMesh already enforces this in the composer) |
 | Frame header | 15 chars, MeshCore-specific | would need a Meshtastic-specific design |
 | Per-frame integrity | CRC-16 | reusable as-is |
-| Message addressing | MeshCore's own | Meshtastic channel index / direct-message node ID (MeshChat already models both — see `ChatMessage.destination_num`) |
+| Message addressing | MeshCore's own | Meshtastic channel index / direct-message node ID (OrcMesh already models both — see `ChatMessage.destination_num`) |
 
 The **framing layer is the MeshCore-specific part** and can't be reused
 directly — the byte budget, header format, and message-count math would all
@@ -76,7 +76,7 @@ the bytes.
 
 **Bottom line:** this is a vendor-and-adapt situation, not a drop-in dependency.
 The reusable core is real and substantial; the framing/transport layer and all
-of the MeshChat-side UI would be new work.
+of the OrcMesh-side UI would be new work.
 
 ---
 
@@ -92,7 +92,7 @@ reason they feel like "more than the file size" is that the reader is a
 black/white cells is a much denser *visual* channel than, say, a 1D barcode,
 for that specific transport method (printed ink, camera sensor).
 
-That trick doesn't apply here. MeshChat has no optical scan step — the
+That trick doesn't apply here. OrcMesh has no optical scan step — the
 Meshtastic text messages *are* the data channel directly, with no image
 representation in between. Drawing our compressed bitstream as a QR-style
 raster pattern wouldn't add capacity; MCoreIMG's existing Base91 text encoding
@@ -137,8 +137,8 @@ exists to make them explicit, not to answer them unilaterally.
 
 | Option | Tradeoff |
 |---|---|
-| **Vendor a one-time copy** | Copy `model` + `compression` into MeshChat, adapt freely for our framing. No dependency on Aaron's repo staying maintained or stable. Loses future upstream compression improvements automatically. |
-| **Real fork, track upstream** | Can pull in future protocol/compression improvements. More coordination overhead once MeshChat's framing diverges from MeshCore's — merges get harder the more the two projects' transport layers differ. |
+| **Vendor a one-time copy** | Copy `model` + `compression` into OrcMesh, adapt freely for our framing. No dependency on Aaron's repo staying maintained or stable. Loses future upstream compression improvements automatically. |
+| **Real fork, track upstream** | Can pull in future protocol/compression improvements. More coordination overhead once OrcMesh's framing diverges from MeshCore's — merges get harder the more the two projects' transport layers differ. |
 
 Given the framing layer *must* diverge regardless (Meshtastic's byte budget is
 different from MeshCore's), a real fork mostly buys future improvements to the
@@ -158,21 +158,21 @@ Not a commitment, just what the work would concretely involve, to size it:
    bytes/message instead of 150 chars, reusing CRC-16 per-frame + CRC-32
    stream-level integrity. Needs a message-count strategy (fixed N like
    MCoreIMG's "10", or variable based on content).
-3. **New message kind in MeshChat's chat model.** `ChatMessage` currently
+3. **New message kind in OrcMesh's chat model.** `ChatMessage` currently
    models plain text; an image transfer needs to be recognizable as
    "part of image transfer #X, frame N/M" so it doesn't render as garbled
    text in the chat bubble, and so out-of-order/partial arrivals can be
    buffered correctly (Meshtastic doesn't guarantee delivery order).
 4. **Compose UI.** Import/select an SVG (or a simple drawing tool) in
    `ChatView`, live message-count budget as the user composes — mirroring
-   MCoreIMG's Constructor GUI feedback loop, adapted to MeshChat's theme
+   MCoreIMG's Constructor GUI feedback loop, adapted to OrcMesh's theme
    and widget set.
 5. **Receive UI.** Detect an in-progress transfer, show a progress
    indicator across incoming frames, decode with the vendored Reconstructor
    logic once complete, render inline in the chat bubble (not a separate
    window).
 6. **Decide fork vs. vendor** (see above) before step 1, since it affects
-   how the vendored files are organized in the MeshChat tree.
+   how the vendored files are organized in the OrcMesh tree.
 
 Sizing note: the codec port (step 1–2) is moderate, well-scoped work given the
 existing clean module boundaries. The UI (steps 3–5) is the larger piece —

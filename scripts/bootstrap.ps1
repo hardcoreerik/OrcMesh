@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Bootstrap the MeshChat development environment.
+    Bootstrap the OrcMesh development environment.
 .DESCRIPTION
     Creates a virtual environment, installs the package in editable mode with
     all dev dependencies.  Run once after cloning, or again to upgrade deps.
@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 
-Write-Host "==> MeshChat bootstrap" -ForegroundColor Cyan
+Write-Host "==> OrcMesh bootstrap" -ForegroundColor Cyan
 
 # ── Python version check ────────────────────────────────────────────────────
 $py = Get-Command python -ErrorAction SilentlyContinue

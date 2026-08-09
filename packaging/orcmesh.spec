@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for MeshChat for Windows.
+PyInstaller spec for OrcMesh.
 
 Build with:
-    .\.venv\Scripts\pyinstaller packaging\meshchat.spec
+    .\.venv\Scripts\pyinstaller packaging\orcmesh.spec
 
 Or use the build script:
     .\scripts\build.ps1
@@ -129,7 +129,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="MeshChat",
+    name="OrcMesh",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -152,5 +152,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=["vcruntime140.dll", "python3*.dll", "Qt6*.dll"],
-    name="MeshChat",
+    name="OrcMesh",
 )

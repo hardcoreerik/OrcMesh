@@ -1,1 +1,1 @@
-"""MeshChat for Windows"""
+"""OrcMesh — LoRa Mesh Operations Console."""

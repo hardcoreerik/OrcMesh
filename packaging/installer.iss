@@ -1,13 +1,13 @@
-; MeshChat for Windows — Inno Setup installer script.
+; OrcMesh — Inno Setup installer script.
 ;
-; Build with (after scripts\build.ps1 has produced dist\MeshChat\):
+; Build with (after scripts\build.ps1 has produced dist\OrcMesh\):
 ;   & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\installer.iss
 ; (or wherever ISCC.exe landed for your Inno Setup install — winget installs
 ; per-user by default, not to Program Files.)
 ;
-; Produces dist\MeshChat-Setup-<version>.exe: a single installer with a
+; Produces dist\OrcMesh-Setup-<version>.exe: a single installer with a
 ; Start Menu shortcut, optional desktop icon, and a standard uninstaller
-; registered in Windows' "Apps & features". No code signing — MeshChat
+; registered in Windows' "Apps & features". No code signing — OrcMesh
 ; isn't signed yet (see ROADMAP.md), so Windows SmartScreen will show an
 ; "unrecognized publisher" warning on first run until it builds up
 ; enough download reputation.
@@ -17,11 +17,11 @@
 ; (pyproject.toml drives what gets baked into the exe via
 ; importlib.metadata; this drives the installer filename/registry entry).
 
-#define MyAppName "MeshChat"
-#define MyAppVersion "0.1.1"
+#define MyAppName "OrcMesh"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "hardcoreerik"
-#define MyAppURL "https://github.com/hardcoreerik/MeshChat-Windows"
-#define MyAppExeName "MeshChat.exe"
+#define MyAppURL "https://github.com/hardcoreerik/OrcMesh"
+#define MyAppExeName "OrcMesh.exe"
 
 [Setup]
 AppId={{6E9C2C6D-6B7B-4F2E-9C2C-6D6B7B4F2E9C}
@@ -40,7 +40,7 @@ LicenseFile=..\LICENSE
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\dist
-OutputBaseFilename=MeshChat-Setup-{#MyAppVersion}
+OutputBaseFilename=OrcMesh-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -58,7 +58,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Everything PyInstaller collected — the exe, its _internal/ dependency
 ; tree, and the QtWebEngineProcess.exe/icudtl.dat build.ps1 copies in
 ; alongside it.
-Source: "..\dist\MeshChat\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\OrcMesh\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -69,7 +69,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; MeshChat writes logs/settings under %LOCALAPPDATA%\MeshChat (see
+; OrcMesh retains its pre-rebrand data under %LOCALAPPDATA%\MeshChat (see
 ; platformdirs usage in app.py) — deliberately NOT removed here. An
 ; uninstall shouldn't silently delete a user's chat history/node
 ; database; that's what "Reset" inside the app (once it exists) or a

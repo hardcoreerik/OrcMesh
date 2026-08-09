@@ -1,14 +1,14 @@
 <div align="center">
 
-# MeshChat for Windows
+# OrcMesh
 
-**A native Windows client and deep network monitor for [Meshtastic](https://meshtastic.org) mesh radios.**
+**A native Windows operations console for [Meshtastic](https://meshtastic.org) LoRa mesh radios.**
 
-Chat with your mesh, then actually *see* it — every node, every packet, every hop.
+Map. Monitor. Message.
 
-[![Release](https://img.shields.io/github/v/release/hardcoreerik/MeshChat-Windows?include_prereleases&color=00D4FF)](https://github.com/hardcoreerik/MeshChat-Windows/releases)
+[![Release](https://img.shields.io/github/v/release/hardcoreerik/OrcMesh?include_prereleases&color=00D4FF)](https://github.com/hardcoreerik/OrcMesh/releases)
 [![License](https://img.shields.io/badge/license-GPL--3.0-8B5CF6)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64-4F9EFF)](https://github.com/hardcoreerik/MeshChat-Windows/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-4F9EFF)](https://github.com/hardcoreerik/OrcMesh/releases)
 [![Python](https://img.shields.io/badge/python-3.12%2B-00FF88)](https://www.python.org/)
 
 </div>
@@ -19,8 +19,8 @@ Chat with your mesh, then actually *see* it — every node, every packet, every 
 
 ## What this is
 
-MeshChat connects to **one** Meshtastic radio over USB, Bluetooth, or Wi-Fi.
-The radio — not the PC — sends and receives the actual LoRa packets. MeshChat
+OrcMesh connects to **one** Meshtastic radio over USB, Bluetooth, or Wi-Fi.
+The radio — not the PC — sends and receives the actual LoRa packets. OrcMesh
 gives you a chat client on top of it, plus a monitoring dashboard that surfaces
 what the mesh is really doing: who's reachable, how many hops away, what's
 relaying, and how the signal looks.
@@ -92,28 +92,28 @@ environment sensors when a node reports them.
 Channel messaging across the radio's configured Meshtastic channels, direct
 messages to any reachable node, and local message history that survives
 restarts — Meshtastic radios don't store message history themselves, so
-MeshChat keeps its own.
+OrcMesh keeps its own.
 
 ### 📶 Spectrum *(optional — needs an RTL-SDR)*
 
 A waterfall view of raw RF energy in the LoRa ISM bands. This shows *that*
 activity is happening and where in the band — it does **not** decode LoRa
 packets. Requires an RTL-SDR dongle plus `pyrtlsdr` and the native librtlsdr
-driver; MeshChat runs normally without any of that.
+driver; OrcMesh runs normally without any of that.
 
 ---
 
 ## Install
 
 **Just want to run it?** Grab the latest build from
-[Releases](https://github.com/hardcoreerik/MeshChat-Windows/releases), extract,
-and run `MeshChat.exe`. No installer, no Python needed. Windows x64.
+[Releases](https://github.com/hardcoreerik/OrcMesh/releases), extract,
+and run `OrcMesh.exe`. No installer, no Python needed. Windows x64.
 
 **From source** (Python 3.12+ x64):
 
 ```powershell
-git clone https://github.com/hardcoreerik/MeshChat-Windows.git
-cd MeshChat-Windows
+git clone https://github.com/hardcoreerik/OrcMesh.git
+cd OrcMesh
 .\scripts\bootstrap.ps1
 .\scripts\run-dev.ps1
 ```
@@ -125,7 +125,7 @@ cd MeshChat-Windows
 | Transport | Notes |
 |---|---|
 | **USB / Serial** | Most reliable. Pick the COM port and hit Connect. |
-| **Bluetooth** | Pair the radio in **Windows Settings first** — Meshtastic radios require OS-level pairing before any app can reach them. MeshChat detects this case and offers a shortcut to the Bluetooth settings page. |
+| **Bluetooth** | Pair the radio in **Windows Settings first** — Meshtastic radios require OS-level pairing before any app can reach them. OrcMesh detects this case and offers a shortcut to the Bluetooth settings page. |
 | **Wi-Fi / TCP** | Enter the radio's hostname or IP (default port 4403). |
 
 ---
@@ -134,11 +134,11 @@ cd MeshChat-Windows
 
 ```powershell
 .\scripts\test.ps1          # run the test suite
-.\scripts\build.ps1         # build dist\MeshChat\MeshChat.exe
+.\scripts\build.ps1         # build dist\OrcMesh\OrcMesh.exe
 .\scripts\run-dev.ps1 -Debug   # verbose logging
 ```
 
-Logs are written to `%LOCALAPPDATA%\MeshChat\Logs\`.
+For upgrade compatibility, logs remain under `%LOCALAPPDATA%\MeshChat\Logs\`.
 
 **Architecture** — PySide6 (Qt 6) desktop app. All blocking Meshtastic I/O runs
 on a dedicated `QThread`; the radio library's PubSub callbacks are marshalled
@@ -168,7 +168,7 @@ issues are welcome.
 
 GPL-3.0-only — see [LICENSE](LICENSE).
 
-MeshChat links the official Meshtastic Python package, which is GPL-3.0
+OrcMesh links the official Meshtastic Python package, which is GPL-3.0
 copyleft, so this project is licensed to match. Full dependency licensing is in
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 

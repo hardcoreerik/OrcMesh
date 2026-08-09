@@ -1,6 +1,6 @@
 # Third Party Licenses
 
-MeshChat for Windows is licensed **GPL-3.0-only** — see [LICENSE](LICENSE).
+OrcMesh is licensed **GPL-3.0-only** — see [LICENSE](LICENSE).
 It is licensed this way because it links the official Meshtastic Python
 package, which is GPL-3.0-only copyleft.
 

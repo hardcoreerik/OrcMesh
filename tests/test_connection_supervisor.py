@@ -6,8 +6,7 @@ and QObject signals/slots behave as they do in production.
 """
 from __future__ import annotations
 
-import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -31,7 +30,6 @@ def qt_app():
 
 @pytest.fixture
 def mock_controller():
-    ctrl = MagicMock()
     # Provide real Signal-like objects so ConnectionSupervisor can connect to them.
     from PySide6.QtCore import QObject, Signal
 

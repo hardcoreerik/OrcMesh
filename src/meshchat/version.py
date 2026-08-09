@@ -1,4 +1,4 @@
-"""MeshChat version.
+"""OrcMesh version.
 
 Single-sourced from the installed package metadata so this cannot drift from
 pyproject.toml. The literal is only a fallback for running straight from a
@@ -14,10 +14,10 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
-_FALLBACK = "0.1.0"
+_FALLBACK = "0.2.0"
 
 try:
-    __version__ = _pkg_version("meshchat-windows")
+    __version__ = _pkg_version("orcmesh")
 except PackageNotFoundError:  # running from an uninstalled source checkout
     __version__ = _FALLBACK
 
