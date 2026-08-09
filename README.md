@@ -94,6 +94,25 @@ messages to any reachable node, and local message history that survives
 restarts — Meshtastic radios don't store message history themselves, so
 OrcMesh keeps its own.
 
+### ⚙ USB radio controls
+
+When connected over USB/Serial, the Device page provides typed controls for
+radio and module configuration, owner identity, channels, fixed position,
+reboot/shutdown, NodeDB reset, and guarded factory resets. Passwords, PINs,
+PSKs, and cryptographic key material are never read into editable controls or
+written to logs; secret replacements are write-only.
+
+The Firmware tab discovers official `meshtastic/firmware` releases for the
+target reported by the connected radio. It verifies the release SHA-256,
+target/hardware metadata, and image hashes before flashing. Update mode writes
+only the application image and preserves settings. Full install requires a
+typed confirmation, erases the device, and restores the verified factory,
+OTA, and filesystem images at the release-declared offsets. A chip-ID preflight
+must identify the expected ESP32 family before either path can write anything.
+
+Firmware flashing is inherently interruption-sensitive. Use a known-good USB
+cable and do not unplug or power off the radio until OrcMesh reports completion.
+
 ### 📶 Spectrum *(optional — needs an RTL-SDR)*
 
 A waterfall view of raw RF energy in the LoRa ISM bands. This shows *that*
@@ -152,8 +171,6 @@ before reaching the UI or the SQLite store. The map is Leaflet in a
 ## Roadmap
 
 - MeshCore network support alongside Meshtastic
-- Editing LoRa region/preset from the app (with appropriate guard rails —
-  region selection has real RF-regulatory meaning)
 - Compact image transmission over the mesh — see
   [docs/mcoreimg-integration.md](docs/mcoreimg-integration.md)
 

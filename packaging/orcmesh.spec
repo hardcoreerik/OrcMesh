@@ -80,6 +80,9 @@ hiddenimports += ["pubsub.core", "pubsub.utils"]
 hiddenimports += collect_submodules("pyqtgraph")
 hiddenimports += ["pyqtgraph.graphicsItems.PlotItem.PlotItem"]
 
+# Official Meshtastic ESP32 firmware flashing
+hiddenimports += collect_submodules("esptool")
+
 # platformdirs
 hiddenimports += ["platformdirs", "platformdirs.windows"]
 

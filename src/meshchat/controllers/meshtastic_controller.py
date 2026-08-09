@@ -46,6 +46,7 @@ class ErrorCode(Enum):
     CONNECTION_LOST = "connection_lost"
     SEND_FAILED = "send_failed"
     INVALID_MESSAGE = "invalid_message"
+    DEVICE_CONTROL_FAILED = "device_control_failed"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -112,6 +113,9 @@ class DeviceSummary:
     hw_model: str | None
     firmware_version: str | None
     node_num: int | None = None
+    pio_env: str | None = None
+    serial_port: str | None = None
+    can_shutdown: bool = False
 
 
 @dataclass(frozen=True)
@@ -216,7 +220,7 @@ def _extract_channels(interface) -> list[ChannelSummary]:
     return sorted(result, key=lambda c: c.index)
 
 
-def _device_summary(interface) -> DeviceSummary:
+def _device_summary(interface, serial_port: str | None = None) -> DeviceSummary:
     try:
         my_info = getattr(interface, "myInfo", None) or {}
         metadata = getattr(interface, "metadata", None)
@@ -235,6 +239,9 @@ def _device_summary(interface) -> DeviceSummary:
             hw_model=user.get("hwModel"),
             firmware_version=fw,
             node_num=local_num,
+            pio_env=getattr(my_info, "pio_env", None),
+            serial_port=serial_port,
+            can_shutdown=bool(getattr(metadata, "can_shutdown", False)),
         )
     except Exception as exc:
         log.warning("DeviceSummary extraction failed: %s", exc)
@@ -316,12 +323,15 @@ class MeshtasticWorker(QObject):
     error_occurred = Signal(object)                   # UserFacingError
     diagnostic_log = Signal(str)
     raw_packet = Signal(dict)                         # for monitor ingestion
+    device_controls_updated = Signal(object)
+    device_operation_completed = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._interface = None
         self._state = ConnectionState.DISCONNECTED
         self._subscribed = False
+        self._serial_port: str | None = None
 
     # -----------------------------------------------------------------------
     # State helpers
@@ -388,13 +398,14 @@ class MeshtasticWorker(QObject):
         if not self._is_active_interface(interface):
             return
         try:
-            summary = _device_summary(interface)
+            summary = _device_summary(interface, self._serial_port)
             channels = _extract_channels(interface)
             lora_config = _extract_lora_config(interface)
             self._set_state(ConnectionState.CONNECTED, summary.long_name or "")
             self.connected.emit(summary)
             self.channels_updated.emit(channels)
             self.lora_config_updated.emit(lora_config)
+            self._emit_device_controls()
 
             # The meshtastic library has already downloaded the radio's full
             # NodeDB by the time this event fires — push it out so the UI can
@@ -571,6 +582,7 @@ class MeshtasticWorker(QObject):
         if self._state not in (ConnectionState.DISCONNECTED, ConnectionState.ERROR, ConnectionState.RECONNECTING):
             return
         self._close_interface()
+        self._serial_port = None
         self._subscribe()
         self._set_state(ConnectionState.CONNECTING, address)
         try:
@@ -626,6 +638,7 @@ class MeshtasticWorker(QObject):
             return
 
         self._close_interface()
+        self._serial_port = None
         self._subscribe()
         self._set_state(ConnectionState.CONNECTING, f"{host}:{port}")
         try:
@@ -692,6 +705,7 @@ class MeshtasticWorker(QObject):
             return
 
         self._close_interface()
+        self._serial_port = port
         self._subscribe()
         self._set_state(ConnectionState.CONNECTING, port)
         try:
@@ -898,6 +912,123 @@ class MeshtasticWorker(QObject):
                              f"Could not remove node: {exc}", True)
 
     # -----------------------------------------------------------------------
+    # Slots: connected-radio configuration and maintenance
+    # -----------------------------------------------------------------------
+
+    def _emit_device_controls(self) -> None:
+        if self._interface is None:
+            return
+        try:
+            from meshchat.services.device_config import build_snapshot
+            self.device_controls_updated.emit(build_snapshot(self._interface, self._serial_port))
+        except Exception as exc:
+            log.exception("Device control snapshot failed")
+            self._emit_error(
+                ErrorCode.DEVICE_CONTROL_FAILED, "Device Read Failed",
+                "Could not read the connected radio controls.", True, str(exc),
+            )
+
+    @Slot()
+    def refresh_device_controls(self) -> None:
+        if self._require_connection("read device settings"):
+            self._emit_device_controls()
+
+    @Slot(str, object)
+    def apply_device_section(self, section: str, changes: dict) -> None:
+        if not self._require_connection("change device settings"):
+            return
+        try:
+            from meshchat.services.device_config import apply_section
+            apply_section(self._interface.localNode, section, changes)
+            self.device_operation_completed.emit("config", f"Saved {section.replace('_', ' ')} settings")
+            self._emit_device_controls()
+        except Exception as exc:
+            log.exception("Device setting write failed for %s", section)
+            self._emit_error(
+                ErrorCode.DEVICE_CONTROL_FAILED, "Settings Write Failed",
+                f"Could not save {section.replace('_', ' ')} settings.", True, str(exc),
+            )
+
+    @Slot(str, str)
+    def set_owner(self, long_name: str, short_name: str) -> None:
+        if not self._require_connection("change device identity"):
+            return
+        try:
+            self._interface.localNode.setOwner(long_name=long_name, short_name=short_name)
+            self.device_operation_completed.emit("owner", "Device identity saved")
+        except Exception as exc:
+            log.exception("Owner write failed")
+            self._emit_error(ErrorCode.DEVICE_CONTROL_FAILED, "Identity Write Failed",
+                             "Could not save the device identity.", True, str(exc))
+
+    @Slot(object)
+    def update_channel(self, changes: dict) -> None:
+        if not self._require_connection("change channel settings"):
+            return
+        try:
+            from meshtastic.util import fromPSK
+            node = self._interface.localNode
+            index = int(changes["index"])
+            if index < 0 or index >= len(node.channels):
+                raise ValueError("Invalid channel index")
+            channel = node.channels[index]
+            channel.role = int(changes["role"])
+            channel.settings.name = str(changes.get("name", "")).strip()
+            channel.settings.uplink_enabled = bool(changes.get("uplink_enabled", False))
+            channel.settings.downlink_enabled = bool(changes.get("downlink_enabled", False))
+            channel.settings.module_settings.position_precision = int(
+                changes.get("position_precision", 0)
+            )
+            replacement_psk = str(changes.get("psk", "")).strip()
+            if replacement_psk:
+                channel.settings.psk = fromPSK(replacement_psk)
+            node.writeChannel(index)
+            self.device_operation_completed.emit("channel", f"Saved channel {index}")
+            self._emit_device_controls()
+        except Exception as exc:
+            log.exception("Channel write failed")
+            self._emit_error(ErrorCode.DEVICE_CONTROL_FAILED, "Channel Write Failed",
+                             "Could not save the channel.", True, str(exc))
+
+    def _run_local_node_action(self, action: str, callback) -> None:
+        if not self._require_connection(action):
+            return
+        try:
+            callback(self._interface.localNode)
+            self.device_operation_completed.emit(action, f"{action.title()} command sent")
+        except Exception as exc:
+            log.exception("Device action failed: %s", action)
+            self._emit_error(ErrorCode.DEVICE_CONTROL_FAILED, "Device Command Failed",
+                             f"Could not {action} the radio.", True, str(exc))
+
+    @Slot(int)
+    def reboot_device(self, seconds: int = 2) -> None:
+        self._run_local_node_action("reboot", lambda node: node.reboot(max(0, seconds)))
+
+    @Slot(int)
+    def shutdown_device(self, seconds: int = 2) -> None:
+        self._run_local_node_action("shutdown", lambda node: node.shutdown(max(0, seconds)))
+
+    @Slot()
+    def reset_nodedb(self) -> None:
+        self._run_local_node_action("reset node database", lambda node: node.resetNodeDb())
+
+    @Slot(bool)
+    def factory_reset(self, full: bool = False) -> None:
+        self._run_local_node_action("factory reset", lambda node: node.factoryReset(full=full))
+
+    @Slot(float, float, int)
+    def set_fixed_position(self, latitude: float, longitude: float, altitude: int) -> None:
+        self._run_local_node_action(
+            "set fixed position",
+            lambda node: node.setFixedPosition(latitude, longitude, altitude),
+        )
+
+    @Slot()
+    def remove_fixed_position(self) -> None:
+        self._run_local_node_action("remove fixed position", lambda node: node.removeFixedPosition())
+
+    # -----------------------------------------------------------------------
     # Slot: Shutdown
     # -----------------------------------------------------------------------
 
@@ -971,6 +1102,16 @@ class MeshtasticController(QObject):
     error_occurred = Signal(object)
     diagnostic_log = Signal(str)
     raw_packet = Signal(dict)
+    device_controls_updated = Signal(object)
+    device_operation_completed = Signal(str, str)
+
+    _apply_section_requested = Signal(str, object)
+    _set_owner_requested = Signal(str, str)
+    _update_channel_requested = Signal(object)
+    _reboot_requested = Signal(int)
+    _shutdown_requested = Signal(int)
+    _factory_reset_requested = Signal(bool)
+    _fixed_position_requested = Signal(float, float, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -996,6 +1137,16 @@ class MeshtasticController(QObject):
         w.error_occurred.connect(self.error_occurred)
         w.diagnostic_log.connect(self.diagnostic_log)
         w.raw_packet.connect(self.raw_packet)
+        w.device_controls_updated.connect(self.device_controls_updated)
+        w.device_operation_completed.connect(self.device_operation_completed)
+
+        self._apply_section_requested.connect(w.apply_device_section)
+        self._set_owner_requested.connect(w.set_owner)
+        self._update_channel_requested.connect(w.update_channel)
+        self._reboot_requested.connect(w.reboot_device)
+        self._shutdown_requested.connect(w.shutdown_device)
+        self._factory_reset_requested.connect(w.factory_reset)
+        self._fixed_position_requested.connect(w.set_fixed_position)
 
         self._thread.start()
 
@@ -1071,6 +1222,43 @@ class MeshtasticController(QObject):
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
         QMetaObject.invokeMethod(self._worker, "remove_node",
                                  Qt.ConnectionType.QueuedConnection, Q_ARG("qlonglong", node_num))
+
+    def refresh_device_controls(self) -> None:
+        from PySide6.QtCore import QMetaObject, Qt
+        QMetaObject.invokeMethod(
+            self._worker, "refresh_device_controls", Qt.ConnectionType.QueuedConnection
+        )
+
+    def apply_device_section(self, section: str, changes: dict) -> None:
+        self._apply_section_requested.emit(section, changes)
+
+    def set_owner(self, long_name: str, short_name: str) -> None:
+        self._set_owner_requested.emit(long_name, short_name)
+
+    def update_channel(self, changes: dict) -> None:
+        self._update_channel_requested.emit(changes)
+
+    def reboot_device(self, seconds: int = 2) -> None:
+        self._reboot_requested.emit(seconds)
+
+    def shutdown_device(self, seconds: int = 2) -> None:
+        self._shutdown_requested.emit(seconds)
+
+    def reset_nodedb(self) -> None:
+        from PySide6.QtCore import QMetaObject, Qt
+        QMetaObject.invokeMethod(self._worker, "reset_nodedb", Qt.ConnectionType.QueuedConnection)
+
+    def factory_reset(self, full: bool = False) -> None:
+        self._factory_reset_requested.emit(full)
+
+    def set_fixed_position(self, latitude: float, longitude: float, altitude: int) -> None:
+        self._fixed_position_requested.emit(latitude, longitude, altitude)
+
+    def remove_fixed_position(self) -> None:
+        from PySide6.QtCore import QMetaObject, Qt
+        QMetaObject.invokeMethod(
+            self._worker, "remove_fixed_position", Qt.ConnectionType.QueuedConnection
+        )
 
     def shutdown(self) -> None:
         from PySide6.QtCore import QMetaObject, Qt

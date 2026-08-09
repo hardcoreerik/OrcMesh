@@ -15,6 +15,7 @@ dependencies = [
     "platformdirs>=4,<5",
     "pyqtgraph>=0.13",
     "numpy>=1.26",
+    "esptool>=4.8,<6",
 ]
 
 [project.scripts]
