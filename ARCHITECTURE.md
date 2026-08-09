@@ -1,8 +1,8 @@
 # Architecture
 
-MeshChat is a PySide6 (Qt 6) desktop app that connects to **one** Meshtastic
+OrcMesh is a PySide6 (Qt 6) desktop app that connects to **one** Meshtastic
 radio at a time over USB/Serial, Bluetooth, or TCP. The radio does the actual
-LoRa transmit/receive; MeshChat's job is to talk to it, keep a local record of
+LoRa transmit/receive; OrcMesh's job is to talk to it, keep a local record of
 everything it reports, and present that as a chat client plus a network
 monitor.
 
@@ -213,7 +213,7 @@ test in isolation, and it should stay that way.
 
 PyInstaller (`scripts/build.ps1`) builds a windowed (non-console) exe. Two
 PySide6/QtWebEngine artifacts — `QtWebEngineProcess.exe` and `icudtl.dat` —
-need a manual post-build copy into `dist/MeshChat/` since PyInstaller's
+need a manual post-build copy into `dist/OrcMesh/` since PyInstaller's
 default hooks don't always pick them up. Because the release build is
 windowed, `app.py` installs a global excepthook so unhandled exceptions
 produce a visible crash dialog instead of silently exiting — this is how
@@ -221,7 +221,7 @@ several real bugs in this project were first surfaced by user reports.
 
 ## Licensing constraint
 
-MeshChat links the official `meshtastic` Python package, which is
+OrcMesh links the official `meshtastic` Python package, which is
 GPL-3.0-only. That makes GPL-3.0-only the only license this project can
 legally ship under — this is a hard constraint on any future dependency
 choice too, not just the project's own license.

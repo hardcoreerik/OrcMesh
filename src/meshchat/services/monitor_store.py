@@ -1,4 +1,4 @@
-"""MeshChat – services: SQLite-backed monitor data store with WAL mode."""
+"""OrcMesh – services: SQLite-backed monitor data store with WAL mode."""
 from __future__ import annotations
 
 import logging
@@ -22,6 +22,7 @@ from meshchat.models.position_sample import PositionSample
 from meshchat.models.telemetry_sample import TelemetrySample
 
 log = logging.getLogger(__name__)
+# Legacy storage name retained so upgrades keep chat and monitoring history.
 APP_NAME = "MeshChat"
 
 #: Days of packet/position/telemetry history to keep. Node identities and

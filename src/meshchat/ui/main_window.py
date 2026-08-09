@@ -1,4 +1,4 @@
-"""MeshChat – MainWindow: application shell with nav rail and page stack."""
+"""OrcMesh – MainWindow: application shell with nav rail and page stack."""
 from __future__ import annotations
 
 import logging
@@ -94,7 +94,7 @@ class _NavButton(QPushButton):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MeshChat for Windows")
+        self.setWindowTitle("OrcMesh — LoRa Mesh Operations Console")
         self.setMinimumSize(1100, 700)
         self.resize(1400, 900)
         self.setStyleSheet(global_stylesheet())
@@ -312,7 +312,7 @@ class MainWindow(QMainWindow):
 
         help_menu.addSeparator()
 
-        about_act = QAction("About MeshChat", self)
+        about_act = QAction("About OrcMesh", self)
         about_act.triggered.connect(self._show_about)
         help_menu.addAction(about_act)
 
@@ -469,7 +469,7 @@ class MainWindow(QMainWindow):
         from meshchat.version import VERSION
         import meshtastic
         lines = [
-            f"MeshChat {VERSION}",
+            f"OrcMesh {VERSION}",
             f"Python {sys.version}",
             f"PySide6 {self._pyside6_ver()}",
             f"meshtastic {getattr(meshtastic, '__version__', '?')}",
@@ -489,10 +489,10 @@ class MainWindow(QMainWindow):
         from meshchat.version import VERSION
         QMessageBox.about(
             self,
-            "About MeshChat",
-            f"<b>MeshChat for Windows</b><br>Version {VERSION}<br><br>"
-            "Chat with your Meshtastic mesh network from Windows.<br><br>"
-            "MeshChat connects to one nearby Meshtastic radio.<br>"
+            "About OrcMesh",
+            f"<b>OrcMesh</b><br>LoRa Mesh Operations Console<br>Version {VERSION}<br><br>"
+            "Map, monitor, and message your Meshtastic network from Windows.<br><br>"
+            "OrcMesh connects to one nearby Meshtastic radio.<br>"
             "The radio — not the PC — sends and receives LoRa packets.<br><br>"
             "© 2026  GPLv3 (via Meshtastic Python library)",
         )

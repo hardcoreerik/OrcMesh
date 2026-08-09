@@ -1,4 +1,4 @@
-"""MeshChat – services: application logging setup."""
+"""OrcMesh – services: application logging setup."""
 from __future__ import annotations
 
 import logging
@@ -8,6 +8,7 @@ from pathlib import Path
 
 import platformdirs
 
+# Legacy storage name retained so upgrades keep existing logs.
 APP_NAME = "MeshChat"
 _configured = False
 
@@ -49,7 +50,7 @@ def configure_logging(debug: bool = False) -> None:
     root.addHandler(sh)
 
     log = logging.getLogger(__name__)
-    log.info("MeshChat logging started. Log file: %s", log_file)
+    log.info("OrcMesh logging started. Log file: %s", log_file)
 
 
 def get_log_dir() -> Path:

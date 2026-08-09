@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Run MeshChat in development mode from the local venv.
+    Run OrcMesh in development mode from the local venv.
 .PARAMETER Debug
     Enable verbose debug logging.
 .PARAMETER Args
@@ -23,5 +23,5 @@ $extraArgs = @()
 if ($Debug) { $extraArgs += "--debug" }
 if ($AppArgs) { $extraArgs += $AppArgs }
 
-Write-Host "==> Launching MeshChat (dev)..." -ForegroundColor Cyan
+Write-Host "==> Launching OrcMesh (dev)..." -ForegroundColor Cyan
 & ".\.venv\Scripts\python.exe" -m meshchat @extraArgs

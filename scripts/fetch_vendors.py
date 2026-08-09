@@ -64,7 +64,7 @@ def fetch(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"  downloading {dest.name} ...", end=" ", flush=True)
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "MeshChat-build/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "OrcMesh-build/1.0"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = resp.read()
         dest.write_bytes(data)

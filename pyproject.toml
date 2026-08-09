@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "meshchat-windows"
+name = "orcmesh"
 version = "0.2.0"
-description = "Native Windows desktop client and network monitor for Meshtastic mesh radio networks"
+description = "Native Windows operations console for LoRa mesh networks"
 requires-python = ">=3.12"
 license = "GPL-3.0-only"
 dependencies = [
@@ -18,11 +18,11 @@ dependencies = [
 ]
 
 [project.scripts]
-meshchat = "meshchat.app:main"
+orcmesh = "meshchat.app:main"
 
 [project.optional-dependencies]
 # RTL-SDR spectrum waterfall. Also needs the native librtlsdr driver — on
-# Windows, install the WinUSB driver for the dongle with Zadig. MeshChat runs
+# Windows, install the WinUSB driver for the dongle with Zadig. OrcMesh runs
 # normally without this; the Spectrum page just reports it as unavailable.
 sdr = [
     "pyrtlsdr>=0.3",

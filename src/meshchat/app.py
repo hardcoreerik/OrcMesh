@@ -1,4 +1,4 @@
-"""MeshChat for Windows — application entry point."""
+"""OrcMesh — application entry point."""
 from __future__ import annotations
 
 import argparse
@@ -29,9 +29,9 @@ def _install_excepthook() -> None:
             if QApplication.instance() is not None:
                 box = QMessageBox()
                 box.setIcon(QMessageBox.Icon.Critical)
-                box.setWindowTitle("MeshChat — Unexpected Error")
+                box.setWindowTitle("OrcMesh — Unexpected Error")
                 box.setText(
-                    "MeshChat hit an unexpected error.\n\n"
+                    "OrcMesh hit an unexpected error.\n\n"
                     "It has been written to the log file "
                     "(Help > Open Log Folder). The app may still be usable."
                 )
@@ -46,11 +46,13 @@ def _install_excepthook() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="meshchat", description="MeshChat for Windows")
+    parser = argparse.ArgumentParser(
+        prog="orcmesh", description="OrcMesh — LoRa Mesh Operations Console"
+    )
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging")
     parser.add_argument(
         "--version", action="store_true",
-        help="Print the MeshChat and dependency versions and exit",
+        help="Print the OrcMesh and dependency versions and exit",
     )
     args, _rest = parser.parse_known_args()
 
@@ -62,7 +64,7 @@ def main() -> int:
 
         from meshchat.version import __version__
 
-        print(f"MeshChat {__version__}")
+        print(f"OrcMesh {__version__}")
         # Package metadata rather than a __version__ attribute: meshtastic
         # does not expose one, so getattr() reported "unknown" for it.
         for dist in ("meshtastic", "PySide6", "pyqtgraph"):
@@ -89,9 +91,11 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
+    # Keep the legacy Qt identity so upgrades retain existing settings.
     app.setOrganizationName("MeshChat")
     app.setOrganizationDomain("meshtastic.org")
     app.setApplicationName("MeshChat")
+    app.setApplicationDisplayName("OrcMesh")
 
     from meshchat.version import __version__
     app.setApplicationVersion(__version__)

@@ -1,4 +1,4 @@
-# MeshChat for Windows — runtime dependencies
+# OrcMesh — runtime dependencies
 # Mirrors [project.dependencies] in pyproject.toml.
 # Preferred install is `pip install -e .` (or .\scripts\bootstrap.ps1),
 # which reads pyproject.toml directly.
@@ -12,5 +12,5 @@ numpy>=1.26
 
 # Optional — RTL-SDR spectrum waterfall (Spectrum page).
 # Also needs the native librtlsdr driver; on Windows install the WinUSB
-# driver for the dongle with Zadig. MeshChat runs fine without this.
+# driver for the dongle with Zadig. OrcMesh runs fine without this.
 # pyrtlsdr>=0.3
