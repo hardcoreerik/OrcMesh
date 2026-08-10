@@ -86,7 +86,7 @@ def _section(name: str, message) -> ConfigSection:
             value = list(raw)
         else:
             value = raw
-        choices = ()
+        choices: tuple[ConfigChoice, ...] = ()
         if descriptor.enum_type is not None:
             choices = tuple(ConfigChoice(v.name, v.number) for v in descriptor.enum_type.values)
         fields.append(ConfigField(

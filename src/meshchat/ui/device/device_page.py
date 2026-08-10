@@ -341,6 +341,8 @@ class DevicePage(QWidget):
     def _rebuild_sections(self, sections) -> None:
         while self._section_stack.count():
             widget = self._section_stack.widget(0)
+            if widget is None:
+                break
             self._section_stack.removeWidget(widget)
             widget.deleteLater()
         self._section_selector.clear()
