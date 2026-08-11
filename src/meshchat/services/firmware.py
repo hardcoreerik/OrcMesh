@@ -10,6 +10,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 import platformdirs
 
@@ -18,6 +19,13 @@ _RELEASES_API = "https://api.github.com/repos/meshtastic/firmware/releases?per_p
 _USER_AGENT = "OrcMesh-firmware/0.2"
 _MAX_ASSET_BYTES = 300 * 1024 * 1024
 _PORT_RE = re.compile(r"^COM\d+$", re.IGNORECASE)
+_GITHUB_HOSTS = {
+    "api.github.com",
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+}
+_CHIP_BY_PLATFORM = {"esp32s3": "esp32s3"}
 
 
 class FirmwareError(RuntimeError):
@@ -53,13 +61,21 @@ class FirmwareBundle:
     file_md5: dict[str, str]
 
 
+def _validate_url(url: str) -> None:
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.hostname not in _GITHUB_HOSTS:
+        raise FirmwareError("Firmware network access is restricted to official GitHub HTTPS hosts.")
+
+
 def _json(url: str):
+    _validate_url(url)
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
         "User-Agent": _USER_AGENT,
         "X-GitHub-Api-Version": "2022-11-28",
     })
     with urllib.request.urlopen(request, timeout=30) as response:
+        _validate_url(response.geturl())
         return json.load(response)
 
 
@@ -83,6 +99,8 @@ def discover_release(pio_env: str, include_prerelease: bool = False) -> Firmware
     if target is None:
         raise FirmwareError(f"Release {version} does not support {pio_env}.")
     platform = target["platform"]
+    if platform not in _CHIP_BY_PLATFORM:
+        raise FirmwareError(f"OrcMesh firmware flashing does not support platform {platform}.")
     asset_name = f"firmware-{platform}-{version}.zip"
     asset = next((a for a in release["assets"] if a["name"] == asset_name), None)
     if asset is None:
@@ -128,9 +146,11 @@ def _download(release: FirmwareRelease, progress: Callable[[int, int], None]) ->
             return destination
         destination.unlink()
     partial = destination.with_suffix(destination.suffix + ".partial")
+    _validate_url(release.asset_url)
     request = urllib.request.Request(release.asset_url, headers={"User-Agent": _USER_AGENT})
     received = 0
     with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
+        _validate_url(response.geturl())
         while block := response.read(1024 * 1024):
             output.write(block)
             received += len(block)
@@ -250,42 +270,30 @@ def flash_bundle(
         if expected_serial and current.serial_number != expected_serial:
             raise FirmwareError("A different USB device now owns the selected COM port.")
     validate_bundle(bundle)
+    chip = _CHIP_BY_PLATFORM.get(bundle.release.platform)
+    if chip is None:
+        raise FirmwareError(
+            f"OrcMesh cannot verify platform {bundle.release.platform}; refusing to flash."
+        )
     try:
         import esptool
     except ImportError as exc:
         raise FirmwareError("esptool is not installed in this OrcMesh build.") from exc
 
-    class _Writer:
-        def __init__(self) -> None:
-            self.text = ""
-
-        def write(self, text: str) -> int:
-            self.text += text
-            if text.strip():
-                output(text.rstrip())
-            return len(text)
-
-        def flush(self) -> None:
-            pass
-
-    import contextlib
-    writer = _Writer()
-
-    def run(args: list[str]) -> str:
-        writer.text = ""
+    def run(args: list[str]) -> None:
         output("esptool " + " ".join(Path(arg).name if "firmware" in arg else arg for arg in args))
         try:
-            with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
-                esptool.main(["--port", port, "--baud", "115200", *args])
+            esptool.main([
+                "--chip", chip, "--port", port, "--baud", "115200", *args,
+            ])
         except SystemExit as exc:
             if exc.code not in (None, 0):
                 raise FirmwareError(f"esptool failed with exit code {exc.code}") from exc
         except Exception as exc:
             raise FirmwareError(str(exc)) from exc
-        return writer.text
 
     try:
-        chip_info = run(["chip-id"])
+        run(["chip-id"])
     except FirmwareError as exc:
         if bundle.requires_dfu:
             raise FirmwareError(
@@ -293,12 +301,6 @@ def flash_bundle(
                 "then retry with the radio's COM port."
             ) from exc
         raise
-    expected_chip = {"esp32s3": "ESP32-S3"}.get(bundle.release.platform)
-    if expected_chip and expected_chip.lower() not in chip_info.lower():
-        raise FirmwareError(
-            f"Expected an {expected_chip} target, but esptool did not identify that chip; "
-            "refusing to flash."
-        )
 
     if full_install:
         run(["erase-flash"])

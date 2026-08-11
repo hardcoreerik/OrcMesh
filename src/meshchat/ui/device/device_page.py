@@ -121,8 +121,8 @@ class DevicePage(QWidget):
             ("Reboot", self._confirm_reboot),
             ("Shutdown", self._confirm_shutdown),
             ("Reset NodeDB", self._confirm_nodedb_reset),
-            ("Factory Reset", self._confirm_factory_reset),
-            ("Full Factory Reset", lambda: self._confirm_factory_reset(full=True)),
+            ("Factory Reset", lambda _checked=False: self._confirm_factory_reset(full=False)),
+            ("Full Factory Reset", lambda _checked=False: self._confirm_factory_reset(full=True)),
         ):
             button = QPushButton(label)
             if "Reset" in label:
@@ -372,7 +372,10 @@ class DevicePage(QWidget):
             for choice in field.choices:
                 widget.addItem(choice.label, choice.value)
             index = widget.findData(int(field.value))
-            widget.setCurrentIndex(max(0, index))
+            if index < 0:
+                widget.addItem(f"Unknown ({int(field.value)})", int(field.value))
+                index = widget.count() - 1
+            widget.setCurrentIndex(index)
         else:
             widget = QLineEdit()
             if field.repeated:
@@ -444,7 +447,11 @@ class DevicePage(QWidget):
         if channel is None:
             return
         self._channel_name.setText(channel.name)
-        self._channel_role.setCurrentIndex(max(0, self._channel_role.findData(channel.role)))
+        role_index = self._channel_role.findData(channel.role)
+        if role_index < 0:
+            self._channel_role.addItem(f"UNKNOWN ({channel.role})", channel.role)
+            role_index = self._channel_role.count() - 1
+        self._channel_role.setCurrentIndex(role_index)
         self._channel_uplink.setChecked(channel.uplink_enabled)
         self._channel_downlink.setChecked(channel.downlink_enabled)
         self._position_precision.setValue(channel.position_precision)

@@ -1,9 +1,14 @@
 """Threaded facade for firmware network I/O and flashing."""
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from meshchat.services.firmware import discover_release, flash_bundle, prepare_bundle
+
+
+log = logging.getLogger(__name__)
 
 
 class _FirmwareWorker(QObject):
@@ -20,6 +25,7 @@ class _FirmwareWorker(QObject):
             self.release_found.emit(release)
             self.completed.emit("discover", True, f"Found Meshtastic {release.version}")
         except Exception as exc:
+            log.exception("Firmware release discovery failed")
             self.completed.emit("discover", False, str(exc))
 
     @Slot(object, str, str)
@@ -32,6 +38,7 @@ class _FirmwareWorker(QObject):
             self.bundle_ready.emit(bundle)
             self.completed.emit("prepare", True, "Firmware downloaded and verified")
         except Exception as exc:
+            log.exception("Firmware preparation failed")
             self.completed.emit("prepare", False, str(exc))
 
     @Slot(object, str, bool, object)
@@ -43,6 +50,7 @@ class _FirmwareWorker(QObject):
             )
             self.completed.emit("flash", True, "Firmware flash completed")
         except Exception as exc:
+            log.exception("Firmware flash failed")
             self.completed.emit("flash", False, str(exc))
 
 
@@ -83,4 +91,6 @@ class FirmwareController(QObject):
 
     def shutdown(self) -> None:
         self._thread.quit()
-        self._thread.wait(5000)
+        if not self._thread.wait(5000):
+            log.warning("Firmware operation still active; waiting for it to finish")
+            self._thread.wait()

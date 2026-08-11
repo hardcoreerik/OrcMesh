@@ -9,7 +9,7 @@ PyPubSub>=4.0
 platformdirs>=4,<5
 pyqtgraph>=0.13
 numpy>=1.26
-esptool>=4.8,<6
+esptool>=5,<6
 
 # Optional — RTL-SDR spectrum waterfall (Spectrum page).
 # Also needs the native librtlsdr driver; on Windows install the WinUSB

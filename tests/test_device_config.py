@@ -77,3 +77,8 @@ def test_cryptographic_key_fields_are_not_editable():
     node = _Node()
     with pytest.raises(ValueError, match="not editable"):
         apply_section(node, "security", {"private_key": b"bad"})
+
+
+def test_apply_section_rejects_names_outside_allowlist():
+    with pytest.raises(ValueError, match="Unknown configuration section"):
+        apply_section(_Node(), "version", {})

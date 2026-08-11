@@ -2,11 +2,14 @@ import hashlib
 import json
 import sys
 import zipfile
+from dataclasses import replace
+from importlib.metadata import version
 from types import SimpleNamespace
 
 import pytest
 
 from meshchat.services import firmware
+from meshchat.controllers.firmware_controller import FirmwareController
 
 
 def test_discovery_uses_manifest_target_and_official_digest(monkeypatch):
@@ -43,6 +46,28 @@ def test_discovery_rejects_target_not_in_manifest(monkeypatch):
     }] if _url == firmware._RELEASES_API else {"targets": []})
     with pytest.raises(firmware.FirmwareError, match="does not support"):
         firmware.discover_release("tbeam-s3-core")
+
+
+def test_discovery_rejects_unsupported_platform(monkeypatch):
+    release = {
+        "tag_name": "v1", "draft": False, "prerelease": False,
+        "assets": [{"name": "firmware-1.json", "browser_download_url": "manifest"}],
+    }
+    monkeypatch.setattr(
+        firmware,
+        "_json",
+        lambda url: [release] if url == firmware._RELEASES_API else {
+            "targets": [{"board": "other", "platform": "esp32"}]
+        },
+    )
+    with pytest.raises(firmware.FirmwareError, match="does not support platform"):
+        firmware.discover_release("other")
+
+
+@pytest.mark.parametrize("url", ["http://github.com/file", "https://example.com/file"])
+def test_firmware_urls_are_restricted_to_github_https(url):
+    with pytest.raises(firmware.FirmwareError, match="official GitHub HTTPS"):
+        firmware._validate_url(url)
 
 
 def _release(tmp_path):
@@ -125,8 +150,6 @@ def test_flash_update_uses_only_verified_update_offset(tmp_path, monkeypatch):
     calls = []
     def esptool_main(args):
         calls.append(args)
-        if args[-1] == "chip-id":
-            print("Chip type: ESP32-S3")
 
     monkeypatch.setitem(sys.modules, "esptool", SimpleNamespace(main=esptool_main))
     bundle = firmware.FirmwareBundle(
@@ -137,31 +160,28 @@ def test_flash_update_uses_only_verified_update_offset(tmp_path, monkeypatch):
         file_md5={name: hashlib.md5(path.read_bytes()).hexdigest() for name, path in files.items()},  # noqa: S324
     )
     firmware.flash_bundle(bundle, "COM8", False)
+    prefix = ["--chip", "esp32s3", "--port", "COM8", "--baud", "115200"]
     assert calls == [
-        ["--port", "COM8", "--baud", "115200", "chip-id"],
-        ["--port", "COM8", "--baud", "115200", "write-flash", "0x10000", str(files["update.bin"])],
+        [*prefix, "chip-id"],
+        [*prefix, "write-flash", "0x10000", str(files["update.bin"])],
     ]
 
 
-def test_flash_refuses_unexpected_chip(tmp_path, monkeypatch):
+def test_flash_refuses_unsupported_platform(tmp_path, monkeypatch):
     files = {}
     for name in ("update.bin", "factory.bin", "ota.bin", "fs.bin"):
         path = tmp_path / name
         path.write_bytes(name.encode())
         files[name] = path
-    monkeypatch.setitem(
-        sys.modules,
-        "esptool",
-        SimpleNamespace(main=lambda _args: print("Chip type: ESP32-C3")),
-    )
     bundle = firmware.FirmwareBundle(
-        release=_release(tmp_path), root=tmp_path, pio_env="target", hw_model="model",
+        release=replace(_release(tmp_path), platform="esp32"),
+        root=tmp_path, pio_env="target", hw_model="model",
         requires_dfu=False, update_image=files["update.bin"], factory_image=files["factory.bin"],
         ota_image=files["ota.bin"], filesystem_image=files["fs.bin"],
         ota_offset="0x340000", filesystem_offset="0x670000",
         file_md5={name: hashlib.md5(path.read_bytes()).hexdigest() for name, path in files.items()},  # noqa: S324
     )
-    with pytest.raises(firmware.FirmwareError, match="Expected an ESP32-S3"):
+    with pytest.raises(firmware.FirmwareError, match="cannot verify platform"):
         firmware.flash_bundle(bundle, "COM8", False)
 
 
@@ -175,8 +195,6 @@ def test_full_install_erases_then_writes_verified_partition_offsets(tmp_path, mo
 
     def esptool_main(args):
         calls.append(args)
-        if args[-1] == "chip-id":
-            print("Chip type: ESP32-S3")
 
     monkeypatch.setitem(sys.modules, "esptool", SimpleNamespace(main=esptool_main))
     bundle = firmware.FirmwareBundle(
@@ -187,7 +205,7 @@ def test_full_install_erases_then_writes_verified_partition_offsets(tmp_path, mo
         file_md5={name: hashlib.md5(path.read_bytes()).hexdigest() for name, path in files.items()},  # noqa: S324
     )
     firmware.flash_bundle(bundle, "COM8", True)
-    prefix = ["--port", "COM8", "--baud", "115200"]
+    prefix = ["--chip", "esp32s3", "--port", "COM8", "--baud", "115200"]
     assert calls == [
         [*prefix, "chip-id"],
         [*prefix, "erase-flash"],
@@ -217,3 +235,20 @@ def test_dfu_failure_returns_recovery_instructions(tmp_path, monkeypatch):
     )
     with pytest.raises(firmware.FirmwareError, match="Hold BOOT, tap RESET"):
         firmware.flash_bundle(bundle, "COM8", False)
+
+
+def test_installed_esptool_accepts_commands_used_by_flasher():
+    esptool = pytest.importorskip("esptool")
+    assert int(version("esptool").split(".", 1)[0]) >= 5
+    for command in ("chip-id", "erase-flash", "write-flash"):
+        esptool.main([command, "--help"])
+
+
+def test_firmware_shutdown_waits_for_active_worker():
+    waits = []
+    thread = SimpleNamespace(
+        quit=lambda: None,
+        wait=lambda timeout=None: waits.append(timeout) or timeout is None,
+    )
+    FirmwareController.shutdown(SimpleNamespace(_thread=thread))
+    assert waits == [5000, None]

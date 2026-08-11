@@ -588,6 +588,7 @@ class MainWindow(QMainWindow):
         self._monitor_page.on_local_telemetry(None, None, None)
         self._local_node_num = None
         self._device_page.set_connected(False)
+        self._device_snapshot = None
         self._status_bar.showMessage(f"Disconnected — {reason}")
         if self._pending_flash is not None:
             bundle, full_install, expected_usb = self._pending_flash
@@ -609,7 +610,7 @@ class MainWindow(QMainWindow):
 
     def _on_firmware_flash_requested(self, bundle, full_install: bool, expected_usb) -> None:
         snapshot = self._device_snapshot
-        if snapshot is None or not snapshot.serial_port:
+        if not self._is_connected or snapshot is None or not snapshot.serial_port:
             QMessageBox.warning(self, "USB Radio Required", "Reconnect the radio over USB before flashing.")
             return
         self._flash_port = snapshot.serial_port

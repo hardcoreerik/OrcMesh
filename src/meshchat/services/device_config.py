@@ -190,6 +190,8 @@ def _coerce_scalar(field: FieldDescriptor, value: Any) -> Any:
 
 
 def apply_section(node, section_name: str, changes: dict[str, Any]) -> None:
+    if section_name not in _WRITABLE_SECTIONS:
+        raise ValueError(f"Unknown configuration section: {section_name}")
     parent = node.localConfig if hasattr(node.localConfig, section_name) else node.moduleConfig
     if not hasattr(parent, section_name):
         raise ValueError(f"Unknown configuration section: {section_name}")

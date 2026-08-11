@@ -956,6 +956,7 @@ class MeshtasticWorker(QObject):
         try:
             self._interface.localNode.setOwner(long_name=long_name, short_name=short_name)
             self.device_operation_completed.emit("owner", "Device identity saved")
+            self._emit_device_controls()
         except Exception as exc:
             log.exception("Owner write failed")
             self._emit_error(ErrorCode.DEVICE_CONTROL_FAILED, "Identity Write Failed",
