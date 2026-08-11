@@ -3,10 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QIODevice, QTime, Signal
+from PySide6.QtSerialPort import QSerialPort
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -40,6 +43,12 @@ class DevicePage(QWidget):
     firmware_discover_requested = Signal(str, bool)
     firmware_prepare_requested = Signal(object, str, str)
     firmware_flash_requested = Signal(object, bool, object)
+    firmware_probe_requested = Signal(object)
+    firmware_backup_requested = Signal(str, object)
+    profile_backup_requested = Signal(str)
+    profile_restore_requested = Signal(str)
+    serial_console_start_requested = Signal(str, int)
+    serial_console_stop_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,6 +57,14 @@ class DevicePage(QWidget):
         self._channel_by_index = {}
         self._firmware_release = None
         self._firmware_bundle = None
+        self._connected = False
+        self._profile_backed_up = False
+        self._serial_console_port = ""
+        self._serial = QSerialPort(self)
+        self._firmware_log: QTextEdit
+        self._serial_log: QTextEdit
+        self._serial.readyRead.connect(self._read_serial_console)
+        self._serial.errorOccurred.connect(self._serial_error)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 12)
@@ -181,17 +198,19 @@ class DevicePage(QWidget):
     def _build_firmware_tab(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
+        identity = QGroupBox("Device & release")
+        identity_layout = QVBoxLayout(identity)
         warning = QLabel(
             "Firmware is downloaded only from official meshtastic/firmware releases. "
             "OrcMesh verifies the release SHA-256, target metadata, hardware model, "
             "and every extracted firmware image before enabling Flash."
         )
         warning.setWordWrap(True)
-        layout.addWidget(warning)
+        identity_layout.addWidget(warning)
         row = QHBoxLayout()
         self._release_channel = QComboBox()
-        self._release_channel.addItem("Stable", False)
-        self._release_channel.addItem("Include prerelease", True)
+        self._release_channel.addItem("Latest release", False)
+        self._release_channel.addItem("Include alpha", True)
         self._check_firmware = QPushButton("Check Official Release")
         self._check_firmware.clicked.connect(self._discover_firmware)
         self._download_firmware = QPushButton("Download & Verify")
@@ -201,15 +220,35 @@ class DevicePage(QWidget):
         row.addWidget(self._check_firmware)
         row.addWidget(self._download_firmware)
         row.addStretch()
-        layout.addLayout(row)
+        identity_layout.addLayout(row)
         self._firmware_status = QLabel("No release checked.")
         self._firmware_status.setWordWrap(True)
-        layout.addWidget(self._firmware_status)
+        identity_layout.addWidget(self._firmware_status)
         self._firmware_progress = QProgressBar()
         self._firmware_progress.setRange(0, 1000)
         self._firmware_progress.setValue(0)
-        layout.addWidget(self._firmware_progress)
+        identity_layout.addWidget(self._firmware_progress)
+        layout.addWidget(identity)
+
+        recovery = QGroupBox("Backup & recovery")
+        recovery_layout = QHBoxLayout(recovery)
+        self._backup_profile = QPushButton("Backup Configuration")
+        self._backup_profile.clicked.connect(self._backup_configuration)
+        self._restore_profile = QPushButton("Restore Configuration")
+        self._restore_profile.clicked.connect(self._restore_configuration)
+        self._backup_flash = QPushButton("Backup Full Flash")
+        self._backup_flash.clicked.connect(self._backup_raw_flash)
+        recovery_layout.addWidget(self._backup_profile)
+        recovery_layout.addWidget(self._restore_profile)
+        recovery_layout.addWidget(self._backup_flash)
+        recovery_layout.addStretch()
+        layout.addWidget(recovery)
+
+        actions = QGroupBox("Diagnostics & firmware")
+        actions_layout = QVBoxLayout(actions)
         flash_row = QHBoxLayout()
+        self._probe = QPushButton("Probe Chip & Flash")
+        self._probe.clicked.connect(self._probe_device)
         self._flash_update = QPushButton("Flash Update (Preserve Settings)")
         self._flash_update.setEnabled(False)
         self._flash_update.clicked.connect(lambda: self._confirm_flash(False))
@@ -217,19 +256,89 @@ class DevicePage(QWidget):
         self._flash_full.setObjectName("dangerBtn")
         self._flash_full.setEnabled(False)
         self._flash_full.clicked.connect(lambda: self._confirm_flash(True))
+        flash_row.addWidget(self._probe)
         flash_row.addWidget(self._flash_update)
         flash_row.addWidget(self._flash_full)
         flash_row.addStretch()
-        layout.addLayout(flash_row)
+        actions_layout.addLayout(flash_row)
+        details = QLabel(
+            "Probe and backup are read-only. Full Erase removes settings, channels, keys, "
+            "messages, and the NodeDB. Verbose esptool output is always captured."
+        )
+        details.setWordWrap(True)
+        actions_layout.addWidget(details)
+        layout.addWidget(actions)
+
+        log_tabs = QTabWidget()
+        operation_page = QWidget()
+        operation_layout = QVBoxLayout(operation_page)
+        operation_toolbar = QHBoxLayout()
+        clear_log = QPushButton("Clear")
+        clear_log.clicked.connect(lambda: self._firmware_log.clear())
+        copy_log = QPushButton("Copy")
+        copy_log.clicked.connect(self._copy_firmware_log)
+        save_log = QPushButton("Save Report")
+        save_log.clicked.connect(self._save_firmware_log)
+        operation_toolbar.addWidget(clear_log)
+        operation_toolbar.addWidget(copy_log)
+        operation_toolbar.addWidget(save_log)
+        operation_toolbar.addStretch()
+        operation_layout.addLayout(operation_toolbar)
         self._firmware_log = QTextEdit()
         self._firmware_log.setReadOnly(True)
         self._firmware_log.setPlaceholderText("Firmware progress will appear here. Secrets are never logged.")
-        layout.addWidget(self._firmware_log, 1)
+        self._firmware_log.document().setMaximumBlockCount(5000)
+        operation_layout.addWidget(self._firmware_log)
+        log_tabs.addTab(operation_page, "Operation Log")
+
+        console_page = QWidget()
+        console_layout = QVBoxLayout(console_page)
+        console_toolbar = QHBoxLayout()
+        self._console_baud = QComboBox()
+        for baud in (115200, 230400, 460800, 921600):
+            self._console_baud.addItem(str(baud), baud)
+        self._console_start = QPushButton("Start Read-Only Console")
+        self._console_start.clicked.connect(self._request_serial_console)
+        self._console_stop = QPushButton("Stop & Reconnect")
+        self._console_stop.setEnabled(False)
+        self._console_stop.clicked.connect(self._stop_serial_console)
+        clear_console = QPushButton("Clear")
+        clear_console.clicked.connect(lambda: self._serial_log.clear())
+        copy_console = QPushButton("Copy")
+        copy_console.clicked.connect(
+            lambda: QApplication.clipboard().setText(self._serial_log.toPlainText())
+        )
+        save_console = QPushButton("Save")
+        save_console.clicked.connect(self._save_serial_log)
+        for widget in (
+            self._console_baud, self._console_start, self._console_stop,
+            clear_console, copy_console, save_console,
+        ):
+            console_toolbar.addWidget(widget)
+        console_toolbar.addStretch()
+        console_layout.addLayout(console_toolbar)
+        self._serial_log = QTextEdit()
+        self._serial_log.setReadOnly(True)
+        self._serial_log.setPlaceholderText(
+            "The Meshtastic connection will be released while the raw serial console is open."
+        )
+        self._serial_log.document().setMaximumBlockCount(5000)
+        console_layout.addWidget(self._serial_log)
+        log_tabs.addTab(console_page, "Serial Console")
+        layout.addWidget(log_tabs, 1)
         self._tabs.addTab(page, "Firmware")
 
     def set_connected(self, connected: bool) -> None:
-        self._tabs.setEnabled(connected)
+        self._connected = connected
+        for index in range(min(3, self._tabs.count())):
+            self._tabs.setTabEnabled(index, connected)
         self._refresh.setEnabled(connected)
+        self._check_firmware.setEnabled(connected)
+        self._backup_profile.setEnabled(connected)
+        self._restore_profile.setEnabled(connected)
+        self._backup_flash.setEnabled(connected)
+        self._probe.setEnabled(connected)
+        self._console_start.setEnabled(connected and not self._serial.isOpen())
         if not connected:
             self._snapshot = None
             self._summary.setText("Connect a Meshtastic radio over USB / Serial to manage it.")
@@ -250,6 +359,7 @@ class DevicePage(QWidget):
         self._rebuild_channels(snapshot.channels)
         self._firmware_release = None
         self._firmware_bundle = None
+        self._profile_backed_up = False
         self._download_firmware.setEnabled(False)
         self._flash_update.setEnabled(False)
         self._flash_full.setEnabled(False)
@@ -259,9 +369,8 @@ class DevicePage(QWidget):
 
     def set_firmware_release(self, release) -> None:
         self._firmware_release = release
-        channel = "prerelease" if release.prerelease else "stable"
         self._firmware_status.setText(
-            f"Meshtastic {release.version} ({channel}) · {release.asset_name} · "
+            f"Meshtastic {release.version} ({release.channel}) · {release.asset_name} · "
             f"{release.asset_size / 1024 / 1024:.1f} MB"
         )
         self._download_firmware.setEnabled(True)
@@ -279,7 +388,7 @@ class DevicePage(QWidget):
         self._firmware_progress.setValue(0 if total <= 0 else min(1000, int(done * 1000 / total)))
 
     def append_firmware_log(self, line: str) -> None:
-        self._firmware_log.append(line)
+        self._firmware_log.append(f"[{QTime.currentTime().toString('HH:mm:ss')}] {line}")
 
     def firmware_completed(self, operation: str, success: bool, detail: str) -> None:
         self._firmware_status.setText(detail)
@@ -290,8 +399,19 @@ class DevicePage(QWidget):
         if operation == "flash":
             self._flash_update.setEnabled(success is False and self._firmware_bundle is not None)
             self._flash_full.setEnabled(success is False and self._firmware_bundle is not None)
+        elif operation == "probe":
+            self._probe.setEnabled(self._connected)
+        elif operation == "backup_flash":
+            self._backup_flash.setEnabled(self._connected)
         if not success:
-            self._firmware_log.append("ERROR: " + detail)
+            self.append_firmware_log("ERROR: " + detail)
+
+    def profile_completed(self, operation: str, success: bool, detail: str) -> None:
+        self._backup_profile.setEnabled(self._connected)
+        self._restore_profile.setEnabled(self._connected)
+        if operation == "backup" and success:
+            self._profile_backed_up = True
+        self.append_firmware_log(("OK: " if success else "ERROR: ") + detail)
 
     def _discover_firmware(self) -> None:
         if self._snapshot is None or not self._snapshot.serial_port:
@@ -311,10 +431,137 @@ class DevicePage(QWidget):
             self._firmware_release, self._snapshot.pio_env, self._snapshot.hw_model
         )
 
+    def _expected_usb(self):
+        if self._snapshot is None:
+            return None
+        return self._snapshot.usb_vid, self._snapshot.usb_pid, self._snapshot.usb_serial
+
+    def _backup_configuration(self) -> None:
+        if self._snapshot is None:
+            return
+        suggested = f"{self._snapshot.pio_env}-{QTime.currentTime().toString('HHmmss')}.cfg"
+        destination, _ = QFileDialog.getSaveFileName(
+            self, "Back Up Meshtastic Configuration", suggested,
+            "Meshtastic profile (*.cfg)",
+        )
+        if not destination:
+            return
+        if not destination.lower().endswith(".cfg"):
+            destination += ".cfg"
+        self._backup_profile.setEnabled(False)
+        self.append_firmware_log("Backing up configuration, channels, and security keys.")
+        self.profile_backup_requested.emit(destination)
+
+    def _restore_configuration(self) -> None:
+        source, _ = QFileDialog.getOpenFileName(
+            self, "Restore Meshtastic Configuration", "", "Meshtastic profile (*.cfg)"
+        )
+        if not source or not self._yes(
+            "Restore Configuration",
+            "This overwrites device identity, channels, radio settings, and security keys. "
+            "OrcMesh will first create a safety backup beside the selected file. Continue?",
+        ):
+            return
+        self._restore_profile.setEnabled(False)
+        self.append_firmware_log("Validating configuration profile and creating safety backup.")
+        self.profile_restore_requested.emit(source)
+
+    def _probe_device(self) -> None:
+        if self._snapshot is None:
+            return
+        self._probe.setEnabled(False)
+        self._firmware_log.clear()
+        self.append_firmware_log("Starting read-only chip, flash, MAC, and security probe.")
+        self.firmware_probe_requested.emit(self._expected_usb())
+
+    def _backup_raw_flash(self) -> None:
+        if self._snapshot is None:
+            return
+        destination, _ = QFileDialog.getSaveFileName(
+            self, "Back Up Entire Flash", f"{self._snapshot.pio_env}-full-flash.bin",
+            "Raw flash image (*.bin)",
+        )
+        if not destination:
+            return
+        if not destination.lower().endswith(".bin"):
+            destination += ".bin"
+        if not self._yes(
+            "Back Up Entire Flash",
+            "The backup can contain channel keys, private keys, Wi-Fi credentials, and messages. "
+            "Store it securely. Continue?",
+        ):
+            return
+        self._backup_flash.setEnabled(False)
+        self._firmware_log.clear()
+        self.append_firmware_log("Starting read-only full flash backup.")
+        self.firmware_backup_requested.emit(destination, self._expected_usb())
+
+    def _copy_firmware_log(self) -> None:
+        QApplication.clipboard().setText(self._firmware_log.toPlainText())
+
+    def _save_text(self, title: str, suggested: str, text: str) -> None:
+        destination, _ = QFileDialog.getSaveFileName(self, title, suggested, "Text files (*.txt)")
+        if destination:
+            if not destination.lower().endswith(".txt"):
+                destination += ".txt"
+            with open(destination, "w", encoding="utf-8") as output:
+                output.write(text)
+
+    def _save_firmware_log(self) -> None:
+        self._save_text("Save Firmware Report", "orcmesh-firmware-report.txt", self._firmware_log.toPlainText())
+
+    def _save_serial_log(self) -> None:
+        self._save_text("Save Serial Log", "orcmesh-serial-log.txt", self._serial_log.toPlainText())
+
+    def _request_serial_console(self) -> None:
+        if self._snapshot is None or not self._snapshot.serial_port:
+            return
+        self._console_start.setEnabled(False)
+        self._serial_log.append("Releasing the Meshtastic connection for read-only serial access…")
+        self.serial_console_start_requested.emit(
+            self._snapshot.serial_port, int(self._console_baud.currentData())
+        )
+
+    def start_serial_console(self, port: str, baud: int) -> bool:
+        self._serial_console_port = port
+        self._serial.setPortName(port)
+        self._serial.setBaudRate(baud)
+        if not self._serial.open(QIODevice.OpenModeFlag.ReadOnly):
+            self._serial_log.append(f"ERROR: {self._serial.errorString()}")
+            self._console_start.setEnabled(self._connected)
+            return False
+        self._console_stop.setEnabled(True)
+        self._serial_log.append(f"Read-only serial console opened on {port} at {baud} baud.")
+        return True
+
+    def _stop_serial_console(self) -> None:
+        port = self._serial_console_port
+        if self._serial.isOpen():
+            self._serial.close()
+        self._console_stop.setEnabled(False)
+        self._serial_log.append("Serial console closed; reconnecting OrcMesh…")
+        self.serial_console_stop_requested.emit(port)
+
+    def _read_serial_console(self) -> None:
+        data = bytes(self._serial.readAll())
+        if data:
+            self._serial_log.insertPlainText(data.decode("utf-8", errors="replace").replace("\x00", ""))
+            self._serial_log.ensureCursorVisible()
+
+    def _serial_error(self, error) -> None:
+        if error != QSerialPort.SerialPortError.NoError and self._serial.isOpen():
+            self._serial_log.append(f"\nSERIAL ERROR: {self._serial.errorString()}")
+
     def _confirm_flash(self, full: bool) -> None:
         if self._snapshot is None or self._firmware_bundle is None:
             return
         if full:
+            if not self._profile_backed_up and not self._yes(
+                "No Current Configuration Backup",
+                "No configuration backup was created in this session. Full Erase destroys "
+                "private keys and channels. Continue without a fresh backup?",
+            ):
+                return
             phrase = f"ERASE {self._snapshot.pio_env}"
             text, ok = QInputDialog.getText(
                 self, "Full Firmware Install",
@@ -330,9 +577,7 @@ class DevicePage(QWidget):
             "loss can require a full recovery flash.",
         ):
             return
-        expected_usb = (
-            self._snapshot.usb_vid, self._snapshot.usb_pid, self._snapshot.usb_serial
-        )
+        expected_usb = self._expected_usb()
         self._flash_update.setEnabled(False)
         self._flash_full.setEnabled(False)
         self._firmware_log.clear()

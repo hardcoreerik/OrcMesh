@@ -8,7 +8,9 @@ import re
 import time
 import urllib.request
 import zipfile
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
@@ -20,6 +22,7 @@ _RELEASES_API = "https://api.github.com/repos/meshtastic/firmware/releases?per_p
 _USER_AGENT = "OrcMesh-firmware/0.2"
 _MAX_ASSET_BYTES = 300 * 1024 * 1024
 _PORT_RE = re.compile(r"^COM\d+$", re.IGNORECASE)
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _GITHUB_HOSTS = {
     "api.github.com",
     "github.com",
@@ -44,6 +47,7 @@ class FirmwareRelease:
     asset_size: int
     asset_sha256: str
     platform: str
+    channel: str = "stable"
 
 
 @dataclass(frozen=True)
@@ -112,6 +116,10 @@ def discover_release(pio_env: str, include_prerelease: bool = False) -> Firmware
     digest = str(asset.get("digest") or "")
     if not digest.startswith("sha256:"):
         raise FirmwareError("The official release asset does not provide a SHA-256 digest.")
+    release_name = str(release.get("name") or "").lower()
+    channel = "alpha" if release.get("prerelease") or "alpha" in release_name else (
+        "beta" if "beta" in release_name else "stable"
+    )
     return FirmwareRelease(
         tag=release["tag_name"],
         version=version,
@@ -122,6 +130,7 @@ def discover_release(pio_env: str, include_prerelease: bool = False) -> Firmware
         asset_size=size,
         asset_sha256=digest.removeprefix("sha256:"),
         platform=platform,
+        channel=channel,
     )
 
 
@@ -288,6 +297,161 @@ def _automatic_bootloader_port(
     raise FirmwareError("The radio did not reappear in bootloader mode.")
 
 
+class _LineWriter:
+    def __init__(self, output: Callable[[str], None]):
+        self._output = output
+        self._buffer = ""
+
+    def write(self, value: str) -> int:
+        self._buffer += _ANSI_RE.sub("", value).replace("\r", "\n")
+        lines = self._buffer.split("\n")
+        self._buffer = lines.pop()
+        for line in lines:
+            if line.strip():
+                self._output(line.rstrip())
+        return len(value)
+
+    def flush(self) -> None:
+        if self._buffer.strip():
+            self._output(self._buffer.rstrip())
+        self._buffer = ""
+
+
+def _verify_usb(
+    port: str,
+    expected_usb: tuple[int | None, int | None, str | None] | None,
+) -> None:
+    if os.name == "nt" and not _PORT_RE.fullmatch(port):
+        raise FirmwareError("Select one explicit Windows COM port.")
+    if expected_usb is None:
+        return
+    from serial.tools import list_ports
+    current = next((item for item in list_ports.comports() if item.device == port), None)
+    if current is None:
+        raise FirmwareError(f"The verified radio is no longer present on {port}.")
+    expected_vid, expected_pid, expected_serial = expected_usb
+    if expected_vid is not None and current.vid != expected_vid:
+        raise FirmwareError("The USB vendor changed after disconnect; refusing the operation.")
+    if expected_pid is not None and current.pid != expected_pid:
+        raise FirmwareError("The USB product changed after disconnect; refusing the operation.")
+    if expected_serial and current.serial_number != expected_serial:
+        raise FirmwareError("A different USB device now owns the selected COM port.")
+
+
+def _run_esptool(
+    chip: str,
+    port: str,
+    args: list[str],
+    output: Callable[[str], None],
+    before: str = "default-reset",
+    after: str = "no-reset",
+) -> None:
+    try:
+        import esptool
+    except ImportError as exc:
+        raise FirmwareError("esptool is not installed in this OrcMesh build.") from exc
+    shown = [Path(arg).name if ("/" in arg or "\\" in arg) else arg for arg in args]
+    output(
+        f"esptool --verbose --chip {chip} --port {port} --before {before} "
+        f"--after {after} " + " ".join(shown)
+    )
+    writer = _LineWriter(output)
+    try:
+        with redirect_stdout(writer), redirect_stderr(writer):
+            esptool.main([
+                "--verbose", "--chip", chip, "--port", port, "--baud", "115200",
+                "--before", before, "--after", after, *args,
+            ])
+    except SystemExit as exc:
+        if exc.code not in (None, 0):
+            raise FirmwareError(f"esptool failed with exit code {exc.code}") from exc
+    except Exception as exc:
+        raise FirmwareError(str(exc)) from exc
+    finally:
+        writer.flush()
+
+
+def _bootloader_port(
+    chip: str,
+    port: str,
+    expected_usb: tuple[int | None, int | None, str | None] | None,
+    output: Callable[[str], None],
+    automatic_retry: bool,
+) -> str:
+    try:
+        _run_esptool(chip, port, ["chip-id"], output)
+        return port
+    except FirmwareError:
+        if not automatic_retry:
+            raise
+    try:
+        port = _automatic_bootloader_port(port, expected_usb, output)
+        _run_esptool(chip, port, ["chip-id"], output)
+        return port
+    except FirmwareError as exc:
+        raise FirmwareError(
+            "Automatic bootloader entry failed. Hold BOOT, tap RESET, release BOOT, "
+            "then retry with the radio's COM port."
+        ) from exc
+
+
+def probe_device(
+    port: str,
+    expected_usb: tuple[int | None, int | None, str | None] | None = None,
+    output: Callable[[str], None] = lambda _line: None,
+) -> None:
+    _verify_usb(port, expected_usb)
+    port = _bootloader_port("auto", port, expected_usb, output, True)
+    for command in ("read-mac", "flash-id"):
+        _run_esptool("auto", port, [command], output, "no-reset")
+    _run_esptool(
+        "auto", port, ["get-security-info"], output, "no-reset", "hard-reset"
+    )
+    output("Read-only device probe completed.")
+
+
+def backup_flash(
+    port: str,
+    destination: Path,
+    expected_usb: tuple[int | None, int | None, str | None] | None = None,
+    output: Callable[[str], None] = lambda _line: None,
+) -> Path:
+    _verify_usb(port, expected_usb)
+    destination = destination.resolve()
+    if destination.suffix.lower() != ".bin" or not destination.parent.is_dir():
+        raise FirmwareError("Choose a .bin backup file in an existing folder.")
+    partial = destination.with_suffix(".bin.partial")
+    partial.unlink(missing_ok=True)
+    port = _bootloader_port("auto", port, expected_usb, output, True)
+    try:
+        _run_esptool(
+            "auto", port, ["read-flash", "0", "ALL", str(partial)],
+            output, "no-reset", "hard-reset"
+        )
+        if not partial.is_file() or partial.stat().st_size == 0:
+            raise FirmwareError("The raw flash backup is empty.")
+        digest = _hash(partial, "sha256")
+        os.replace(partial, destination)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    manifest = {
+        "format": "OrcMesh raw flash backup v1",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "image": destination.name,
+        "bytes": destination.stat().st_size,
+        "sha256": digest,
+        "usb_vid": expected_usb[0] if expected_usb else None,
+        "usb_pid": expected_usb[1] if expected_usb else None,
+        "usb_serial": expected_usb[2] if expected_usb else None,
+    }
+    destination.with_suffix(".json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+    output(f"Raw flash backup saved as {destination.name} (SHA-256 {digest}).")
+    return destination
+
+
 def flash_bundle(
     bundle: FirmwareBundle,
     port: str,
@@ -295,64 +459,30 @@ def flash_bundle(
     expected_usb: tuple[int | None, int | None, str | None] | None = None,
     output: Callable[[str], None] = lambda _line: None,
 ) -> None:
-    if os.name == "nt" and not _PORT_RE.fullmatch(port):
-        raise FirmwareError("Select one explicit Windows COM port before flashing.")
-    if expected_usb is not None:
-        from serial.tools import list_ports
-        current = next((item for item in list_ports.comports() if item.device == port), None)
-        if current is None:
-            raise FirmwareError(f"The verified radio is no longer present on {port}.")
-        expected_vid, expected_pid, expected_serial = expected_usb
-        if expected_vid is not None and current.vid != expected_vid:
-            raise FirmwareError("The USB vendor changed after disconnect; refusing to flash.")
-        if expected_pid is not None and current.pid != expected_pid:
-            raise FirmwareError("The USB product changed after disconnect; refusing to flash.")
-        if expected_serial and current.serial_number != expected_serial:
-            raise FirmwareError("A different USB device now owns the selected COM port.")
+    _verify_usb(port, expected_usb)
     validate_bundle(bundle)
     chip = _CHIP_BY_PLATFORM.get(bundle.release.platform)
     if chip is None:
         raise FirmwareError(
             f"OrcMesh cannot verify platform {bundle.release.platform}; refusing to flash."
         )
-    try:
-        import esptool
-    except ImportError as exc:
-        raise FirmwareError("esptool is not installed in this OrcMesh build.") from exc
-
-    def run(args: list[str], active_port: str | None = None) -> None:
-        active_port = active_port or port
-        output("esptool " + " ".join(Path(arg).name if "firmware" in arg else arg for arg in args))
-        try:
-            esptool.main([
-                "--chip", chip, "--port", active_port, "--baud", "115200", *args,
-            ])
-        except SystemExit as exc:
-            if exc.code not in (None, 0):
-                raise FirmwareError(f"esptool failed with exit code {exc.code}") from exc
-        except Exception as exc:
-            raise FirmwareError(str(exc)) from exc
-
-    try:
-        run(["chip-id"])
-    except FirmwareError:
-        if bundle.requires_dfu:
-            try:
-                port = _automatic_bootloader_port(port, expected_usb, output)
-                run(["chip-id"], port)
-            except FirmwareError as automatic_exc:
-                raise FirmwareError(
-                    "Automatic bootloader entry failed. Hold BOOT, tap RESET, release BOOT, "
-                    "then retry with the radio's COM port."
-                ) from automatic_exc
-        else:
-            raise
+    port = _bootloader_port(chip, port, expected_usb, output, bundle.requires_dfu)
 
     if full_install:
-        run(["erase-flash"])
-        run(["write-flash", "0x0", str(bundle.factory_image)])
-        run(["write-flash", bundle.ota_offset, str(bundle.ota_image)])
-        run(["write-flash", bundle.filesystem_offset, str(bundle.filesystem_image)])
+        _run_esptool(chip, port, ["erase-flash"], output, "no-reset")
+        _run_esptool(
+            chip, port, ["write-flash", "0x0", str(bundle.factory_image)], output, "no-reset"
+        )
+        _run_esptool(
+            chip, port, ["write-flash", bundle.ota_offset, str(bundle.ota_image)],
+            output, "no-reset"
+        )
+        _run_esptool(chip, port, [
+            "write-flash", bundle.filesystem_offset, str(bundle.filesystem_image)
+        ], output, "no-reset", "hard-reset")
     else:
-        run(["write-flash", "0x10000", str(bundle.update_image)])
+        _run_esptool(
+            chip, port, ["write-flash", "0x10000", str(bundle.update_image)],
+            output, "no-reset", "hard-reset"
+        )
     output("Firmware flash completed; waiting for the radio to reboot.")
