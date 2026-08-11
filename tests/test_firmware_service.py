@@ -226,6 +226,11 @@ def test_dfu_failure_returns_recovery_instructions(tmp_path, monkeypatch):
         "esptool",
         SimpleNamespace(main=lambda _args: (_ for _ in ()).throw(RuntimeError("no sync"))),
     )
+    monkeypatch.setattr(
+        firmware,
+        "_automatic_bootloader_port",
+        lambda *_args: (_ for _ in ()).throw(firmware.FirmwareError("no DFU port")),
+    )
     bundle = firmware.FirmwareBundle(
         release=_release(tmp_path), root=tmp_path, pio_env="target", hw_model="model",
         requires_dfu=True, update_image=files["update.bin"], factory_image=files["factory.bin"],
@@ -235,6 +240,66 @@ def test_dfu_failure_returns_recovery_instructions(tmp_path, monkeypatch):
     )
     with pytest.raises(firmware.FirmwareError, match="Hold BOOT, tap RESET"):
         firmware.flash_bundle(bundle, "COM8", False)
+
+
+def test_dfu_failure_retries_on_automatic_bootloader_port(tmp_path, monkeypatch):
+    files = {}
+    for name in ("update.bin", "factory.bin", "ota.bin", "fs.bin"):
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        files[name] = path
+    calls = []
+
+    def esptool_main(args):
+        calls.append(args)
+        if args[-1] == "chip-id" and "COM8" in args:
+            raise RuntimeError("no sync")
+
+    monkeypatch.setitem(sys.modules, "esptool", SimpleNamespace(main=esptool_main))
+    monkeypatch.setattr(firmware, "_automatic_bootloader_port", lambda *_args: "COM9")
+    bundle = firmware.FirmwareBundle(
+        release=_release(tmp_path), root=tmp_path, pio_env="target", hw_model="model",
+        requires_dfu=True, update_image=files["update.bin"], factory_image=files["factory.bin"],
+        ota_image=files["ota.bin"], filesystem_image=files["fs.bin"],
+        ota_offset="0x340000", filesystem_offset="0x670000",
+        file_md5={name: hashlib.md5(path.read_bytes()).hexdigest() for name, path in files.items()},  # noqa: S324
+    )
+
+    firmware.flash_bundle(bundle, "COM8", False)
+
+    assert [call[3] for call in calls] == ["COM8", "COM9", "COM9"]
+
+
+def test_automatic_bootloader_uses_1200_baud_and_follows_new_port(monkeypatch):
+    opened = []
+
+    class FakeSerial:
+        def __init__(self, **kwargs):
+            opened.append(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    import serial
+    from serial.tools import list_ports
+
+    monkeypatch.setattr(serial, "Serial", FakeSerial)
+    monkeypatch.setattr(firmware.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        list_ports,
+        "comports",
+        lambda: [SimpleNamespace(device="COM9", vid=0x303A, pid=0x1001, serial_number="radio")],
+    )
+
+    port = firmware._automatic_bootloader_port(
+        "COM8", (0x303A, 0x1001, "radio"), lambda _line: None
+    )
+
+    assert port == "COM9"
+    assert opened == [{"port": "COM8", "baudrate": 1200, "timeout": 1}]
 
 
 def test_installed_esptool_accepts_commands_used_by_flasher():

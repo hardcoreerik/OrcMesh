@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -248,6 +249,45 @@ def validate_bundle(bundle: FirmwareBundle) -> None:
             raise FirmwareError(f"Firmware file is missing or changed: {path.name}")
 
 
+def _automatic_bootloader_port(
+    port: str,
+    expected_usb: tuple[int | None, int | None, str | None] | None,
+    output: Callable[[str], None],
+) -> str:
+    from serial import Serial, SerialException
+    from serial.tools import list_ports
+
+    output("Normal reset failed; trying automatic 1200-bps bootloader entry.")
+    try:
+        with Serial(port=port, baudrate=1200, timeout=1):
+            time.sleep(0.5)
+    except SerialException:
+        # The normal reset may already have started USB re-enumeration.
+        pass
+
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        candidates = list(list_ports.comports())
+        if expected_usb is None:
+            match = next((item for item in candidates if item.device == port), None)
+        else:
+            expected_vid, expected_pid, expected_serial = expected_usb
+            matches = [
+                item for item in candidates
+                if (expected_vid is None or item.vid == expected_vid)
+                and (expected_pid is None or item.pid == expected_pid)
+                and (not expected_serial or item.serial_number == expected_serial)
+            ]
+            match = next((item for item in matches if item.device == port), None)
+            if match is None and len(matches) == 1:
+                match = matches[0]
+        if match is not None:
+            output(f"Bootloader available on {match.device}.")
+            return str(match.device)
+        time.sleep(0.25)
+    raise FirmwareError("The radio did not reappear in bootloader mode.")
+
+
 def flash_bundle(
     bundle: FirmwareBundle,
     port: str,
@@ -280,11 +320,12 @@ def flash_bundle(
     except ImportError as exc:
         raise FirmwareError("esptool is not installed in this OrcMesh build.") from exc
 
-    def run(args: list[str]) -> None:
+    def run(args: list[str], active_port: str | None = None) -> None:
+        active_port = active_port or port
         output("esptool " + " ".join(Path(arg).name if "firmware" in arg else arg for arg in args))
         try:
             esptool.main([
-                "--chip", chip, "--port", port, "--baud", "115200", *args,
+                "--chip", chip, "--port", active_port, "--baud", "115200", *args,
             ])
         except SystemExit as exc:
             if exc.code not in (None, 0):
@@ -294,13 +335,18 @@ def flash_bundle(
 
     try:
         run(["chip-id"])
-    except FirmwareError as exc:
+    except FirmwareError:
         if bundle.requires_dfu:
-            raise FirmwareError(
-                "Could not enter the ESP32 bootloader. Hold BOOT, tap RESET, release BOOT, "
-                "then retry with the radio's COM port."
-            ) from exc
-        raise
+            try:
+                port = _automatic_bootloader_port(port, expected_usb, output)
+                run(["chip-id"], port)
+            except FirmwareError as automatic_exc:
+                raise FirmwareError(
+                    "Automatic bootloader entry failed. Hold BOOT, tap RESET, release BOOT, "
+                    "then retry with the radio's COM port."
+                ) from automatic_exc
+        else:
+            raise
 
     if full_install:
         run(["erase-flash"])
