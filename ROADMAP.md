@@ -46,6 +46,11 @@ below — they're cited here for provenance, not as a dependency.
   but never made it into a downloadable build until this one; also the
   first release with a proper Windows installer (`MeshChat-Setup-*.exe`,
   Inno Setup) instead of a raw `dist/` folder
+- USB device controls for typed radio/module configuration, owner identity,
+  channels, fixed position, maintenance actions, and guarded resets
+- Official Meshtastic firmware discovery and verified ESP32-S3 update/full
+  flashing, with target matching, chip-ID preflight, secret-safe logging, and
+  explicit destructive confirmation
 
 ## In progress
 
@@ -64,7 +69,6 @@ Not yet built, in no particular priority order:
 - Multiple profiles
 - Multiple simultaneously connected local radios
 - Message search
-- Channel configuration (from the app)
 - QR/channel URL import (needs explicit security warnings per the spec —
   channel URLs embed the PSK)
 - Windows installer is unsigned (`packaging/installer.iss`, Inno Setup) —
@@ -86,14 +90,11 @@ Not yet built, in no particular priority order:
   first step: an offline IQ-capture-then-decode PoC using `lora-phy` to
   validate feasibility before any UI is built around it — the Spectrum page
   currently shows *that* RF activity exists, not decoded packet content.
-- **Editing LoRa region/preset from the app.** Needs real guard rails —
-  region selection has RF-regulatory meaning, not just a UI preference.
 - **Compact image transmission over the mesh** — see
   [docs/mcoreimg-integration.md](docs/mcoreimg-integration.md).
 
 ## Explicitly out of scope (per the original build spec, §1/§26)
 
-- Firmware flashing
 - Reimplementing Meshtastic protobuf framing (use the official `meshtastic`
   package unless an upstream defect makes that unavoidable)
 - Storing/logging channel PSKs, Bluetooth PINs, or Wi-Fi credentials

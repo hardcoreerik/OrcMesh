@@ -14,6 +14,7 @@ package, which is GPL-3.0-only copyleft.
 | [numpy](https://numpy.org/) | BSD-3-Clause | Numerics |
 | [platformdirs](https://github.com/platformdirs/platformdirs) | MIT | Per-user data/log paths |
 | [PyPubSub](https://github.com/schollii/pypubsub) | BSD-2-Clause | Event distribution |
+| [esptool](https://github.com/espressif/esptool) | GPL-2.0-or-later | ESP32 firmware flashing |
 | [pyrtlsdr](https://github.com/pyrtlsdr/pyrtlsdr) | GPL-3.0 | Optional — RTL-SDR spectrum capture |
 
 ## Bundled web assets

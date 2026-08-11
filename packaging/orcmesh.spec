@@ -29,7 +29,10 @@ datas += [(str(ROOT / "src/meshchat/ui/map/web"), "meshchat/ui/map/web")]
 # 2. Meshtastic protobuf definitions (*.proto files shipped with the package)
 datas += collect_data_files("meshtastic", includes=["*.proto", "*.pyi"])
 
-# 3. PySide6 WebEngine resources (icudtl.dat, qtwebengine_resources.pak, etc.)
+# 3. esptool flasher stubs (JSON payloads loaded at runtime)
+datas += collect_data_files("esptool")
+
+# 4. PySide6 WebEngine resources (icudtl.dat, qtwebengine_resources.pak, etc.)
 #    PyInstaller's PySide6 hook usually handles these, but be explicit for safety.
 try:
     import PySide6
@@ -79,6 +82,9 @@ hiddenimports += ["pubsub.core", "pubsub.utils"]
 # pyqtgraph — has lazy imports
 hiddenimports += collect_submodules("pyqtgraph")
 hiddenimports += ["pyqtgraph.graphicsItems.PlotItem.PlotItem"]
+
+# Official Meshtastic ESP32 firmware flashing
+hiddenimports += collect_submodules("esptool")
 
 # platformdirs
 hiddenimports += ["platformdirs", "platformdirs.windows"]

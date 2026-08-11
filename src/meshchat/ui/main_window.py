@@ -101,12 +101,17 @@ class MainWindow(QMainWindow):
 
         # ── Services ──────────────────────────────────────────────────
         self._controller = MeshtasticController(self)
+        from meshchat.controllers.firmware_controller import FirmwareController
+        self._firmware_controller = FirmwareController(self)
         self._session = NetworkSession.new()
         self._store = MonitorStore()
         self._ingestor = PacketIngestor(self._session, self._store)
         self._supervisor = ConnectionSupervisor(self._controller, self._store, parent=self)
         self._export_thread: QThread | None = None
         self._export_worker: _PacketExportWorker | None = None
+        self._device_snapshot = None
+        self._pending_flash = None
+        self._flash_port: str | None = None
 
         # ── Central layout ────────────────────────────────────────────
         central = QWidget()
@@ -127,9 +132,13 @@ class MainWindow(QMainWindow):
         self._nav_monitor  = _NavButton("📡", "Monitor")
         self._nav_nodes    = _NavButton("🔵", "Nodes")
         self._nav_spectrum = _NavButton("📶", "Spectrum")
+        self._nav_device   = _NavButton("⚙", "Device")
         self._nav_chat.setChecked(True)
 
-        for btn in (self._nav_chat, self._nav_monitor, self._nav_nodes, self._nav_spectrum):
+        for btn in (
+            self._nav_chat, self._nav_monitor, self._nav_nodes,
+            self._nav_spectrum, self._nav_device,
+        ):
             btn.setAutoExclusive(True)
             nav_layout.addWidget(btn)
 
@@ -201,12 +210,37 @@ class MainWindow(QMainWindow):
         from meshchat.ui.spectrum.spectrum_page import SpectrumPage
         self._spectrum_page = SpectrumPage()
 
+        from meshchat.ui.device.device_page import DevicePage
+        self._device_page = DevicePage()
+        self._device_page.refresh_requested.connect(self._controller.refresh_device_controls)
+        self._device_page.save_section_requested.connect(self._controller.apply_device_section)
+        self._device_page.owner_requested.connect(self._controller.set_owner)
+        self._device_page.channel_requested.connect(self._controller.update_channel)
+        self._device_page.reboot_requested.connect(self._controller.reboot_device)
+        self._device_page.shutdown_requested.connect(self._controller.shutdown_device)
+        self._device_page.reset_nodedb_requested.connect(self._controller.reset_nodedb)
+        self._device_page.factory_reset_requested.connect(self._controller.factory_reset)
+        self._device_page.fixed_position_requested.connect(self._controller.set_fixed_position)
+        self._device_page.remove_fixed_position_requested.connect(
+            self._controller.remove_fixed_position
+        )
+        self._device_page.firmware_discover_requested.connect(
+            self._firmware_controller.discover
+        )
+        self._device_page.firmware_prepare_requested.connect(
+            self._firmware_controller.prepare
+        )
+        self._device_page.firmware_flash_requested.connect(
+            self._on_firmware_flash_requested
+        )
+
         # Stacked widget
         self._stack = QStackedWidget()
         self._stack.addWidget(chat_container)        # index 0
         self._stack.addWidget(self._monitor_page)    # index 1
         self._stack.addWidget(self._nodes_page)      # index 2
         self._stack.addWidget(self._spectrum_page)   # index 3
+        self._stack.addWidget(self._device_page)     # index 4
         content_layout.addWidget(self._stack, 1)
 
         root.addWidget(content, 1)
@@ -216,6 +250,7 @@ class MainWindow(QMainWindow):
         self._nav_monitor.clicked.connect(lambda: self._stack.setCurrentIndex(1))
         self._nav_nodes.clicked.connect(lambda: self._stack.setCurrentIndex(2))
         self._nav_spectrum.clicked.connect(lambda: self._stack.setCurrentIndex(3))
+        self._nav_device.clicked.connect(lambda: self._stack.setCurrentIndex(4))
 
         # ── Controller signals ────────────────────────────────────────
         ctrl = self._controller
@@ -234,6 +269,15 @@ class MainWindow(QMainWindow):
         ctrl.node_action_completed.connect(self._on_node_action_completed)
         ctrl.error_occurred.connect(self._on_error)
         ctrl.raw_packet.connect(self._ingestor.ingest_raw)
+        ctrl.device_controls_updated.connect(self._on_device_controls_updated)
+        ctrl.device_operation_completed.connect(self._on_device_operation)
+
+        firmware = self._firmware_controller
+        firmware.release_found.connect(self._device_page.set_firmware_release)
+        firmware.progress.connect(self._device_page.set_firmware_progress)
+        firmware.bundle_ready.connect(self._device_page.set_firmware_bundle)
+        firmware.log.connect(self._device_page.append_firmware_log)
+        firmware.completed.connect(self._on_firmware_completed)
 
         # Ingestor signals
         self._ingestor.packet_ingested.connect(self._monitor_page.on_packet_ingested)
@@ -543,7 +587,45 @@ class MainWindow(QMainWindow):
         self._monitor_page.set_local_node(None)
         self._monitor_page.on_local_telemetry(None, None, None)
         self._local_node_num = None
+        self._device_page.set_connected(False)
+        self._device_snapshot = None
         self._status_bar.showMessage(f"Disconnected — {reason}")
+        if self._pending_flash is not None:
+            bundle, full_install, expected_usb = self._pending_flash
+            self._pending_flash = None
+            QTimer.singleShot(
+                500,
+                lambda: self._firmware_controller.flash(
+                    bundle, self._flash_port or "", full_install, expected_usb
+                ),
+            )
+
+    def _on_device_operation(self, _operation: str, detail: str) -> None:
+        self._device_page.show_operation(detail)
+        self._status_bar.showMessage(detail, 6000)
+
+    def _on_device_controls_updated(self, snapshot) -> None:
+        self._device_snapshot = snapshot
+        self._device_page.set_snapshot(snapshot)
+
+    def _on_firmware_flash_requested(self, bundle, full_install: bool, expected_usb) -> None:
+        snapshot = self._device_snapshot
+        if not self._is_connected or snapshot is None or not snapshot.serial_port:
+            QMessageBox.warning(self, "USB Radio Required", "Reconnect the radio over USB before flashing.")
+            return
+        self._flash_port = snapshot.serial_port
+        self._pending_flash = (bundle, full_install, expected_usb)
+        self._supervisor.cancel()
+        self._status_bar.showMessage("Releasing the USB port for firmware flashing…")
+        self._controller.disconnect()
+
+    def _on_firmware_completed(self, operation: str, success: bool, detail: str) -> None:
+        self._device_page.firmware_completed(operation, success, detail)
+        self._status_bar.showMessage(detail, 10000)
+        if operation == "flash" and self._flash_port:
+            port = self._flash_port
+            self._flash_port = None
+            QTimer.singleShot(7000 if success else 1000, lambda: self._controller.connect_serial(port))
 
     def _on_telemetry(self, sample) -> None:
         # The dashboard header shows the connected radio's own environment
@@ -763,6 +845,7 @@ class MainWindow(QMainWindow):
         settings = QSettings()
         settings.setValue(f"{_SETTINGS_KEY}/geometry", self.saveGeometry())
         self._spectrum_page.shutdown()
+        self._firmware_controller.shutdown()
         self._controller.shutdown()
         self._store.shutdown()
         if self._export_thread is not None:
