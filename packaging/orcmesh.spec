@@ -91,6 +91,7 @@ hiddenimports += ["platformdirs", "platformdirs.windows"]
 
 # PySide6 WebEngine (sometimes not auto-discovered)
 hiddenimports += [
+    "PySide6.QtSerialPort",
     "PySide6.QtWebEngineWidgets",
     "PySide6.QtWebEngineCore",
     "PySide6.QtWebChannel",

@@ -15,6 +15,7 @@ from meshchat.controllers.firmware_controller import FirmwareController
 def test_discovery_uses_manifest_target_and_official_digest(monkeypatch):
     release = {
         "tag_name": "v2.7.26.abc",
+        "name": "Meshtastic Firmware 2.7.26.abc Beta",
         "draft": False,
         "prerelease": False,
         "published_at": "2026-01-01T00:00:00Z",
@@ -37,6 +38,7 @@ def test_discovery_uses_manifest_target_and_official_digest(monkeypatch):
     found = firmware.discover_release("tbeam-s3-core")
     assert found.platform == "esp32s3"
     assert found.asset_sha256 == "a" * 64
+    assert found.channel == "beta"
 
 
 def test_discovery_rejects_target_not_in_manifest(monkeypatch):
@@ -160,10 +162,10 @@ def test_flash_update_uses_only_verified_update_offset(tmp_path, monkeypatch):
         file_md5={name: hashlib.md5(path.read_bytes()).hexdigest() for name, path in files.items()},  # noqa: S324
     )
     firmware.flash_bundle(bundle, "COM8", False)
-    prefix = ["--chip", "esp32s3", "--port", "COM8", "--baud", "115200"]
+    prefix = ["--verbose", "--chip", "esp32s3", "--port", "COM8", "--baud", "115200"]
     assert calls == [
-        [*prefix, "chip-id"],
-        [*prefix, "write-flash", "0x10000", str(files["update.bin"])],
+        [*prefix, "--before", "default-reset", "--after", "no-reset", "chip-id"],
+        [*prefix, "--before", "no-reset", "--after", "hard-reset", "write-flash", "0x10000", str(files["update.bin"])],
     ]
 
 
@@ -205,13 +207,13 @@ def test_full_install_erases_then_writes_verified_partition_offsets(tmp_path, mo
         file_md5={name: hashlib.md5(path.read_bytes()).hexdigest() for name, path in files.items()},  # noqa: S324
     )
     firmware.flash_bundle(bundle, "COM8", True)
-    prefix = ["--chip", "esp32s3", "--port", "COM8", "--baud", "115200"]
+    prefix = ["--verbose", "--chip", "esp32s3", "--port", "COM8", "--baud", "115200"]
     assert calls == [
-        [*prefix, "chip-id"],
-        [*prefix, "erase-flash"],
-        [*prefix, "write-flash", "0x0", str(files["factory.bin"])],
-        [*prefix, "write-flash", "0x340000", str(files["ota.bin"])],
-        [*prefix, "write-flash", "0x670000", str(files["fs.bin"])],
+        [*prefix, "--before", "default-reset", "--after", "no-reset", "chip-id"],
+        [*prefix, "--before", "no-reset", "--after", "no-reset", "erase-flash"],
+        [*prefix, "--before", "no-reset", "--after", "no-reset", "write-flash", "0x0", str(files["factory.bin"])],
+        [*prefix, "--before", "no-reset", "--after", "no-reset", "write-flash", "0x340000", str(files["ota.bin"])],
+        [*prefix, "--before", "no-reset", "--after", "hard-reset", "write-flash", "0x670000", str(files["fs.bin"])],
     ]
 
 
@@ -267,7 +269,7 @@ def test_dfu_failure_retries_on_automatic_bootloader_port(tmp_path, monkeypatch)
 
     firmware.flash_bundle(bundle, "COM8", False)
 
-    assert [call[3] for call in calls] == ["COM8", "COM9", "COM9"]
+    assert [call[4] for call in calls] == ["COM8", "COM9", "COM9"]
 
 
 def test_automatic_bootloader_uses_1200_baud_and_follows_new_port(monkeypatch):
@@ -302,11 +304,62 @@ def test_automatic_bootloader_uses_1200_baud_and_follows_new_port(monkeypatch):
     assert opened == [{"port": "COM8", "baudrate": 1200, "timeout": 1}]
 
 
+def test_probe_runs_read_only_diagnostics_and_resets_last(monkeypatch):
+    calls = []
+    monkeypatch.setattr(firmware, "_verify_usb", lambda *_args: None)
+    monkeypatch.setattr(firmware, "_bootloader_port", lambda *_args: "COM9")
+    monkeypatch.setattr(
+        firmware,
+        "_run_esptool",
+        lambda chip, port, args, _output, before="default-reset", after="no-reset": calls.append(
+            (chip, port, args, before, after)
+        ),
+    )
+
+    firmware.probe_device("COM8")
+
+    assert calls == [
+        ("auto", "COM9", ["read-mac"], "no-reset", "no-reset"),
+        ("auto", "COM9", ["flash-id"], "no-reset", "no-reset"),
+        ("auto", "COM9", ["get-security-info"], "no-reset", "hard-reset"),
+    ]
+
+
+def test_raw_flash_backup_is_atomic_and_writes_manifest(tmp_path, monkeypatch):
+    calls = []
+    destination = tmp_path / "radio.bin"
+    monkeypatch.setattr(firmware, "_verify_usb", lambda *_args: None)
+    monkeypatch.setattr(firmware, "_bootloader_port", lambda *_args: "COM9")
+
+    def run(_chip, _port, args, _output, before="default-reset", after="no-reset"):
+        calls.append((args, before, after))
+        if args[0] == "read-flash":
+            firmware.Path(args[-1]).write_bytes(b"raw flash")
+
+    monkeypatch.setattr(firmware, "_run_esptool", run)
+
+    firmware.backup_flash("COM8", destination, (0x303A, 0x1001, "radio"))
+
+    assert destination.read_bytes() == b"raw flash"
+    assert not destination.with_suffix(".bin.partial").exists()
+    manifest = json.loads(destination.with_suffix(".json").read_text(encoding="utf-8"))
+    assert manifest["sha256"] == hashlib.sha256(b"raw flash").hexdigest()
+    assert manifest["usb_serial"] == "radio"
+    assert calls == [(["read-flash", "0", "ALL", str(destination.with_suffix('.bin.partial'))], "no-reset", "hard-reset")]
+
+
 def test_installed_esptool_accepts_commands_used_by_flasher():
     esptool = pytest.importorskip("esptool")
     assert int(version("esptool").split(".", 1)[0]) >= 5
-    for command in ("chip-id", "erase-flash", "write-flash"):
-        esptool.main([command, "--help"])
+    prefix = [
+        "--verbose", "--chip", "esp32s3", "--port", "COM8", "--baud", "115200",
+        "--before", "default-reset", "--after", "no-reset",
+    ]
+    for command in (
+        "chip-id", "read-mac", "flash-id", "get-security-info",
+        "read-flash", "erase-flash", "write-flash",
+    ):
+        esptool.main([*prefix, command, "--help"])
 
 
 def test_firmware_shutdown_waits_for_active_worker():

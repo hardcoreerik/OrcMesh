@@ -35,9 +35,10 @@ def test_device_page_exposes_all_control_tabs():
 
 def test_device_page_enables_usb_controls_for_serial_snapshot():
     page = DevicePage()
-    assert not page._tabs.isEnabled()
+    assert not page._tabs.isTabEnabled(0)
+    assert page._tabs.isTabEnabled(3)
     page.set_snapshot(_snapshot())
-    assert page._tabs.isEnabled()
+    assert page._tabs.isTabEnabled(0)
     assert "COM8" in page._summary.text()
     assert "tbeam-s3-core" in page._summary.text()
 

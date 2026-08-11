@@ -111,6 +111,9 @@ class MainWindow(QMainWindow):
         self._export_worker: _PacketExportWorker | None = None
         self._device_snapshot = None
         self._pending_flash = None
+        self._pending_probe = None
+        self._pending_flash_backup = None
+        self._pending_serial_console = None
         self._flash_port: str | None = None
 
         # ── Central layout ────────────────────────────────────────────
@@ -233,6 +236,24 @@ class MainWindow(QMainWindow):
         self._device_page.firmware_flash_requested.connect(
             self._on_firmware_flash_requested
         )
+        self._device_page.firmware_probe_requested.connect(
+            self._on_firmware_probe_requested
+        )
+        self._device_page.firmware_backup_requested.connect(
+            self._on_firmware_backup_requested
+        )
+        self._device_page.profile_backup_requested.connect(
+            self._controller.backup_device_profile
+        )
+        self._device_page.profile_restore_requested.connect(
+            self._controller.restore_device_profile
+        )
+        self._device_page.serial_console_start_requested.connect(
+            self._on_serial_console_requested
+        )
+        self._device_page.serial_console_stop_requested.connect(
+            self._on_serial_console_stopped
+        )
 
         # Stacked widget
         self._stack = QStackedWidget()
@@ -271,6 +292,7 @@ class MainWindow(QMainWindow):
         ctrl.raw_packet.connect(self._ingestor.ingest_raw)
         ctrl.device_controls_updated.connect(self._on_device_controls_updated)
         ctrl.device_operation_completed.connect(self._on_device_operation)
+        ctrl.profile_operation_completed.connect(self._device_page.profile_completed)
 
         firmware = self._firmware_controller
         firmware.release_found.connect(self._device_page.set_firmware_release)
@@ -599,6 +621,28 @@ class MainWindow(QMainWindow):
                     bundle, self._flash_port or "", full_install, expected_usb
                 ),
             )
+        elif self._pending_probe is not None:
+            expected_usb = self._pending_probe
+            self._pending_probe = None
+            QTimer.singleShot(
+                500,
+                lambda: self._firmware_controller.probe(
+                    self._flash_port or "", expected_usb
+                ),
+            )
+        elif self._pending_flash_backup is not None:
+            destination, expected_usb = self._pending_flash_backup
+            self._pending_flash_backup = None
+            QTimer.singleShot(
+                500,
+                lambda: self._firmware_controller.backup(
+                    self._flash_port or "", destination, expected_usb
+                ),
+            )
+        elif self._pending_serial_console is not None:
+            port, baud = self._pending_serial_console
+            self._pending_serial_console = None
+            QTimer.singleShot(500, lambda: self._start_serial_console(port, baud))
 
     def _on_device_operation(self, _operation: str, detail: str) -> None:
         self._device_page.show_operation(detail)
@@ -619,13 +663,56 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage("Releasing the USB port for firmware flashing…")
         self._controller.disconnect()
 
+    def _release_for_firmware(self, detail: str) -> bool:
+        snapshot = self._device_snapshot
+        if not self._is_connected or snapshot is None or not snapshot.serial_port:
+            QMessageBox.warning(
+                self, "USB Radio Required", "Reconnect the radio over USB before continuing."
+            )
+            return False
+        self._flash_port = snapshot.serial_port
+        self._supervisor.cancel()
+        self._status_bar.showMessage(detail)
+        return True
+
+    def _on_firmware_probe_requested(self, expected_usb) -> None:
+        if self._release_for_firmware("Releasing USB for device probe…"):
+            self._pending_probe = expected_usb
+            self._controller.disconnect()
+
+    def _on_firmware_backup_requested(self, destination: str, expected_usb) -> None:
+        if self._release_for_firmware("Releasing USB for raw flash backup…"):
+            self._pending_flash_backup = (destination, expected_usb)
+            self._controller.disconnect()
+
+    def _on_serial_console_requested(self, port: str, baud: int) -> None:
+        snapshot = self._device_snapshot
+        if not self._is_connected or snapshot is None or snapshot.serial_port != port:
+            QMessageBox.warning(self, "USB Radio Required", "Reconnect the selected USB radio first.")
+            return
+        self._pending_serial_console = (port, baud)
+        self._supervisor.cancel()
+        self._status_bar.showMessage("Releasing USB for read-only serial console…")
+        self._controller.disconnect()
+
+    def _start_serial_console(self, port: str, baud: int) -> None:
+        if self._device_page.start_serial_console(port, baud):
+            self._status_bar.showMessage(f"Read-only serial console open on {port}")
+        else:
+            self._controller.connect_serial(port)
+
+    def _on_serial_console_stopped(self, port: str) -> None:
+        if port:
+            QTimer.singleShot(500, lambda: self._controller.connect_serial(port))
+
     def _on_firmware_completed(self, operation: str, success: bool, detail: str) -> None:
         self._device_page.firmware_completed(operation, success, detail)
         self._status_bar.showMessage(detail, 10000)
-        if operation == "flash" and self._flash_port:
+        if operation in ("flash", "probe", "backup_flash") and self._flash_port:
             port = self._flash_port
             self._flash_port = None
-            QTimer.singleShot(7000 if success else 1000, lambda: self._controller.connect_serial(port))
+            wait = 7000 if operation == "flash" and success else 1500
+            QTimer.singleShot(wait, lambda: self._controller.connect_serial(port))
 
     def _on_telemetry(self, sample) -> None:
         # The dashboard header shows the connected radio's own environment

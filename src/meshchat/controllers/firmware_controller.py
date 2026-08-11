@@ -5,7 +5,13 @@ import logging
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
-from meshchat.services.firmware import discover_release, flash_bundle, prepare_bundle
+from meshchat.services.firmware import (
+    backup_flash,
+    discover_release,
+    flash_bundle,
+    prepare_bundle,
+    probe_device,
+)
 
 
 log = logging.getLogger(__name__)
@@ -53,6 +59,25 @@ class _FirmwareWorker(QObject):
             log.exception("Firmware flash failed")
             self.completed.emit("flash", False, str(exc))
 
+    @Slot(str, object)
+    def probe(self, port: str, expected_usb) -> None:
+        try:
+            probe_device(port, expected_usb, lambda line: self.log.emit(line))
+            self.completed.emit("probe", True, "Device probe completed")
+        except Exception as exc:
+            log.exception("Device probe failed")
+            self.completed.emit("probe", False, str(exc))
+
+    @Slot(str, str, object)
+    def backup(self, port: str, destination: str, expected_usb) -> None:
+        try:
+            from pathlib import Path
+            backup_flash(port, Path(destination), expected_usb, lambda line: self.log.emit(line))
+            self.completed.emit("backup_flash", True, "Raw flash backup completed")
+        except Exception as exc:
+            log.exception("Raw flash backup failed")
+            self.completed.emit("backup_flash", False, str(exc))
+
 
 class FirmwareController(QObject):
     release_found = Signal(object)
@@ -64,6 +89,8 @@ class FirmwareController(QObject):
     _discover_requested = Signal(str, bool)
     _prepare_requested = Signal(object, str, str)
     _flash_requested = Signal(object, str, bool, object)
+    _probe_requested = Signal(str, object)
+    _backup_requested = Signal(str, str, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,6 +105,8 @@ class FirmwareController(QObject):
         self._discover_requested.connect(self._worker.discover)
         self._prepare_requested.connect(self._worker.prepare)
         self._flash_requested.connect(self._worker.flash)
+        self._probe_requested.connect(self._worker.probe)
+        self._backup_requested.connect(self._worker.backup)
         self._thread.start()
 
     def discover(self, pio_env: str, include_prerelease: bool = False) -> None:
@@ -88,6 +117,12 @@ class FirmwareController(QObject):
 
     def flash(self, bundle, port: str, full_install: bool, expected_usb) -> None:
         self._flash_requested.emit(bundle, port, full_install, expected_usb)
+
+    def probe(self, port: str, expected_usb) -> None:
+        self._probe_requested.emit(port, expected_usb)
+
+    def backup(self, port: str, destination: str, expected_usb) -> None:
+        self._backup_requested.emit(port, destination, expected_usb)
 
     def shutdown(self) -> None:
         self._thread.quit()

@@ -325,6 +325,7 @@ class MeshtasticWorker(QObject):
     raw_packet = Signal(dict)                         # for monitor ingestion
     device_controls_updated = Signal(object)
     device_operation_completed = Signal(str, str)
+    profile_operation_completed = Signal(str, bool, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -991,6 +992,39 @@ class MeshtasticWorker(QObject):
             self._emit_error(ErrorCode.DEVICE_CONTROL_FAILED, "Channel Write Failed",
                              "Could not save the channel.", True, str(exc))
 
+    @Slot(str)
+    def backup_device_profile(self, destination: str) -> None:
+        if not self._require_connection("back up device configuration"):
+            self.profile_operation_completed.emit("backup", False, "Radio is not connected")
+            return
+        try:
+            from pathlib import Path
+            from meshchat.services.device_profile import save_profile
+            digest = save_profile(self._interface, Path(destination))
+            self.profile_operation_completed.emit(
+                "backup", True, f"Configuration backup saved (SHA-256 {digest})"
+            )
+        except Exception as exc:
+            log.exception("Configuration backup failed")
+            self.profile_operation_completed.emit("backup", False, str(exc))
+
+    @Slot(str)
+    def restore_device_profile(self, source: str) -> None:
+        if not self._require_connection("restore device configuration"):
+            self.profile_operation_completed.emit("restore", False, "Radio is not connected")
+            return
+        try:
+            from pathlib import Path
+            from meshchat.services.device_profile import restore_profile
+            safety = restore_profile(self._interface, Path(source))
+            self.profile_operation_completed.emit(
+                "restore", True, f"Configuration restored; safety backup: {safety.name}"
+            )
+            self._emit_device_controls()
+        except Exception as exc:
+            log.exception("Configuration restore failed")
+            self.profile_operation_completed.emit("restore", False, str(exc))
+
     def _run_local_node_action(self, action: str, callback) -> None:
         if not self._require_connection(action):
             return
@@ -1105,10 +1139,13 @@ class MeshtasticController(QObject):
     raw_packet = Signal(dict)
     device_controls_updated = Signal(object)
     device_operation_completed = Signal(str, str)
+    profile_operation_completed = Signal(str, bool, str)
 
     _apply_section_requested = Signal(str, object)
     _set_owner_requested = Signal(str, str)
     _update_channel_requested = Signal(object)
+    _backup_profile_requested = Signal(str)
+    _restore_profile_requested = Signal(str)
     _reboot_requested = Signal(int)
     _shutdown_requested = Signal(int)
     _factory_reset_requested = Signal(bool)
@@ -1140,10 +1177,13 @@ class MeshtasticController(QObject):
         w.raw_packet.connect(self.raw_packet)
         w.device_controls_updated.connect(self.device_controls_updated)
         w.device_operation_completed.connect(self.device_operation_completed)
+        w.profile_operation_completed.connect(self.profile_operation_completed)
 
         self._apply_section_requested.connect(w.apply_device_section)
         self._set_owner_requested.connect(w.set_owner)
         self._update_channel_requested.connect(w.update_channel)
+        self._backup_profile_requested.connect(w.backup_device_profile)
+        self._restore_profile_requested.connect(w.restore_device_profile)
         self._reboot_requested.connect(w.reboot_device)
         self._shutdown_requested.connect(w.shutdown_device)
         self._factory_reset_requested.connect(w.factory_reset)
@@ -1238,6 +1278,12 @@ class MeshtasticController(QObject):
 
     def update_channel(self, changes: dict) -> None:
         self._update_channel_requested.emit(changes)
+
+    def backup_device_profile(self, destination: str) -> None:
+        self._backup_profile_requested.emit(destination)
+
+    def restore_device_profile(self, source: str) -> None:
+        self._restore_profile_requested.emit(source)
 
     def reboot_device(self, seconds: int = 2) -> None:
         self._reboot_requested.emit(seconds)
