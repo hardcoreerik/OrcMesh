@@ -35,6 +35,7 @@ class ConnectionState(Enum):
 class ErrorCode(Enum):
     BLE_NOT_AVAILABLE = "ble_not_available"
     BLE_DEVICE_NOT_FOUND = "ble_device_not_found"
+    BLE_MULTIPLE_DEVICES = "ble_multiple_devices"
     BLE_PAIRING_REQUIRED = "ble_pairing_required"
     BLE_CONNECTION_FAILED = "ble_connection_failed"
     TCP_HOST_NOT_FOUND = "tcp_host_not_found"
@@ -174,9 +175,16 @@ class UserFacingError:
 _PAIRING_ERROR_MARKERS = (
     "insufficient authentication",
     "insufficient encryption",
+    # bleak reports a refused secured read/write as GATT status 0x05, whose text
+    # is "Authentication Failure" — not "insufficient …", which is why the
+    # pairing path used to stay silent for it.
+    "authentication",
     "not paired",
     "access is denied",
 )
+
+#: meshtastic wraps ANY failed ToRadio write as BLEError(kind="write_error").
+_WRITE_ERROR_KIND = "write_error"
 
 
 def _is_pairing_error(exc: BaseException) -> bool:
@@ -192,6 +200,26 @@ def _is_pairing_error(exc: BaseException) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def _ble_error_kind(exc: BaseException) -> str | None:
+    """The structured ``kind`` meshtastic puts on BLEInterface.BLEError.
+
+    Reading the attribute is stabler than matching the message text: the
+    messages are written for the CLI ("Try --ble-scan to find it") and
+    distinguish cases the user needs told apart — a radio that isn't
+    advertising is a completely different problem from two radios answering
+    to the same name, and neither is "the radio is asleep, try again".
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        kind = getattr(current, "kind", None)
+        if isinstance(kind, str) and kind:
+            return kind
+        current = current.__cause__ or current.__context__
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -591,22 +619,59 @@ class MeshtasticWorker(QObject):
             self._interface = BLEInterface(address=address, timeout=45)
             self._set_state(ConnectionState.SYNCING, "Downloading radio configuration…")
         except Exception as exc:
-            log.exception("BLE connect failed")
             self._interface = None
             self._set_state(ConnectionState.ERROR, str(exc))
             self._set_state(ConnectionState.DISCONNECTED)
-            if _is_pairing_error(exc):
+            kind = _ble_error_kind(exc)
+            if _is_pairing_error(exc) or kind == _WRITE_ERROR_KIND:
+                # The radio requires an encrypted link, so its first ToRadio write
+                # is refused until the OS has bonded with it — on Windows that is
+                # what an unpaired device looks like. meshtastic words this as
+                # "Error writing BLE (are you in the 'bluetooth' user group? did you
+                # enter the pairing PIN on your computer?)": Linux advice that names
+                # no remedy here, so the message below names one.
+                log.warning("BLE write to %s was refused (usually unpaired): %s", address, exc)
                 self._emit_error(
                     ErrorCode.BLE_PAIRING_REQUIRED,
                     "Bluetooth Pairing Required",
                     (
-                        f"Windows has not paired with this radio yet ({address}). "
-                        "Pair it in Windows Bluetooth settings, then try connecting again."
+                        f"Windows refused a write to this radio ({address}), which usually "
+                        "means Bluetooth pairing has not completed. Pair the radio in "
+                        "Windows Bluetooth settings using the key it displays, then connect "
+                        "again. If it is already paired, remove it there and pair again."
+                    ),
+                    True,
+                    str(exc),
+                )
+                return
+            if kind == "device_not_found":
+                log.warning("No advertising Meshtastic BLE radio matched %s", address)
+                self._emit_error(
+                    ErrorCode.BLE_DEVICE_NOT_FOUND,
+                    "Bluetooth Device Not Found",
+                    (
+                        f"No Meshtastic radio advertising over Bluetooth matched {address}. "
+                        "Check the radio is switched on and in range with Bluetooth enabled, "
+                        "then press Scan and pick it from the list."
+                    ),
+                    True,
+                    str(exc),
+                )
+            elif kind == "multiple_devices":
+                log.warning("More than one BLE radio matched %s", address)
+                self._emit_error(
+                    ErrorCode.BLE_MULTIPLE_DEVICES,
+                    "Several Radios Matched",
+                    (
+                        f"More than one Bluetooth radio answered to {address}. "
+                        "Give the radios different short names (or scan and pick the "
+                        "exact address) so the right one can be chosen."
                     ),
                     True,
                     str(exc),
                 )
             else:
+                log.exception("BLE connect failed")
                 self._emit_error(
                     ErrorCode.BLE_CONNECTION_FAILED,
                     "Bluetooth Connection Failed",

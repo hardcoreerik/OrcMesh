@@ -58,6 +58,9 @@ class ConnectionBar(QWidget):
         self.setObjectName("connectionBar")
         self._state = ConnectionState.DISCONNECTED
         self._ble_devices: list = []
+        #: BLE address the user chose (or the saved profile) — kept so a rescan
+        #: can reselect it instead of discarding the choice.
+        self._preferred_ble_address = ""
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 0, 8, 0)
@@ -74,6 +77,7 @@ class ConnectionBar(QWidget):
         self._ble_combo = QComboBox()
         self._ble_combo.setFixedWidth(200)
         self._ble_combo.setPlaceholderText("Select device…")
+        self._ble_combo.currentIndexChanged.connect(self._on_ble_selection_changed)
         layout.addWidget(self._ble_combo)
 
         # BLE scan button
@@ -148,10 +152,17 @@ class ConnectionBar(QWidget):
     def set_ble_devices(self, devices: list) -> None:
         """Populate BLE dropdown after a scan."""
         self._ble_devices = devices
+        # Read this BEFORE mutating the combo: a QComboBox selects its first
+        # item automatically, which would overwrite the remembered device
+        # before the reselect below ever ran.
+        preferred = self._preferred_ble_address
         self._ble_combo.clear()
         for d in devices:
             self._ble_combo.addItem(f"{d.name}  ({d.address})", userData=d.address)
-        if devices:
+        # A rescan must not silently throw away the device the user (or the
+        # saved profile) had selected; reselect it when it turns up again,
+        # and otherwise leave the first result selected.
+        if not (preferred and self._select_ble_address(preferred)) and devices:
             self._ble_combo.setCurrentIndex(0)
 
     def set_serial_ports(self, ports: list) -> None:
@@ -173,8 +184,34 @@ class ConnectionBar(QWidget):
         self._status_dot.style().unpolish(self._status_dot)
         self._status_dot.style().polish(self._status_dot)
 
-        self._status_label.setText(label)
+        self._status_label.setText(self._connecting_label(state, label))
+        # The label is a fixed-width strip, so the detail (an address, a host)
+        # rides along as a tooltip rather than being thrown away.
+        self._status_label.setToolTip(detail or label)
         self._update_controls()
+
+    def connecting_expectation(self) -> str:
+        """How long connecting may take, for the selected transport.
+
+        A BLE connect includes a discovery scan plus pairing plus config sync, so
+        it can take the better part of a minute — long enough that "Connecting…"
+        alone reads as a hang that never happened. Bluetooth is the only
+        transport with that problem; serial and TCP settle in a second or two.
+        """
+        if self.current_transport() == "ble":
+            return "discovery and pairing can take up to a minute"
+        return ""
+
+    def _connecting_label(self, state: ConnectionState, label: str) -> str:
+        """The bar's short form of the wait note, for its narrow label strip."""
+        if state in (ConnectionState.CONNECTING, ConnectionState.RECONNECTING) \
+                and self.connecting_expectation():
+            return f"{label} (Bluetooth: slow)"
+        return label
+
+    def current_transport(self) -> str:
+        """'ble', 'tcp' or 'serial' — whichever the selector is on."""
+        return ("ble", "tcp", "serial")[self._transport.currentIndex()]
 
     def set_device_name(self, name: str) -> None:
         self._device_label.setText(f"  {name}" if name else "")
@@ -186,6 +223,11 @@ class ConnectionBar(QWidget):
         app_settings. Only fills fields that the profile actually has — a
         partial profile (e.g. transport only) is fine.
         """
+        if profile.ble_address:
+            # Select before switching transport: an empty combo is what makes
+            # the Bluetooth transport look broken, and _on_transport_changed
+            # starts a scan when it finds one.
+            self._select_ble_address(profile.ble_address, add_if_missing=True)
         transport_idx = {"ble": 0, "tcp": 1, "serial": 2}.get(profile.transport)
         if transport_idx is not None:
             self._transport.setCurrentIndex(transport_idx)
@@ -200,6 +242,35 @@ class ConnectionBar(QWidget):
                 self._serial_combo.addItem(profile.serial_port, userData=profile.serial_port)
                 idx = self._serial_combo.count() - 1
             self._serial_combo.setCurrentIndex(idx)
+
+    def _on_ble_selection_changed(self, _index: int) -> None:
+        """Remember which device the user picked.
+
+        Recording it here rather than only where Connect is pressed is what
+        keeps a rescan from discarding a choice made directly in the combo.
+        """
+        address = self._ble_combo.currentData()
+        if address:
+            self._preferred_ble_address = address
+
+    def _select_ble_address(self, address: str, *, add_if_missing: bool = False,
+                            label: str = "") -> bool:
+        """Select `address` in the BLE combo; return whether it was selected.
+
+        With add_if_missing, an address the radio hasn't advertised yet (a saved
+        profile, before a scan) is offered as "Last used" so Connect has a
+        target. After a scan we don't invent entries: an address that wasn't
+        seen would only produce a connect attempt that cannot succeed.
+        """
+        idx = self._ble_combo.findData(address)
+        if idx < 0:
+            if not add_if_missing:
+                return False
+            self._ble_combo.addItem(label or f"Last used  ({address})", userData=address)
+            idx = self._ble_combo.count() - 1
+        self._ble_combo.setCurrentIndex(idx)
+        self._preferred_ble_address = address
+        return True
 
     # ------------------------------------------------------------------
     # Private
@@ -217,14 +288,24 @@ class ConnectionBar(QWidget):
         self._serial_refresh_btn.setVisible(is_serial)
         if is_serial and self._serial_combo.count() == 0:
             self.list_serial_ports_requested.emit()
+        if is_ble and self._ble_combo.count() == 0:
+            # Same reasoning as the serial enumeration above: an empty device
+            # list is not something the user can act on.
+            self.scan_requested.emit()
 
     def _on_connect(self) -> None:
         idx = self._transport.currentIndex()
         if idx == 0:
             # Bluetooth
             addr = self._ble_combo.currentData()
-            if addr:
-                self.connect_ble_requested.emit(addr)
+            if not addr:
+                # Nothing selected to connect to — the combo is empty until a
+                # scan runs (or a saved device is restored). Doing nothing here
+                # left the user with no feedback at all, so start the scan they
+                # need instead; the status label explains what is happening.
+                self.scan_requested.emit()
+                return
+            self.connect_ble_requested.emit(addr)
         elif idx == 1:
             # TCP
             host = self._tcp_host.text().strip()

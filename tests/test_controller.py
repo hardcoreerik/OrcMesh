@@ -17,9 +17,12 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
 _app = QCoreApplication.instance() or QCoreApplication(sys.argv[:1])
 
+from meshtastic.ble_interface import BLEInterface
+
 from meshchat.controllers.meshtastic_controller import (
     ConnectionState,
     MeshtasticController,
+    _ble_error_kind,
 )
 from tests.fakes.fake_meshtastic_interface import FakeMeshtasticInterface
 
@@ -330,3 +333,95 @@ class TestConnectionLost:
             f"Resync on the same interface must restore CONNECTED, got: {states}"
         )
         ctrl.shutdown()
+
+
+# ── BLE error classification ──────────────────────────────────────────────────
+
+class TestBleErrorClassification:
+    """meshtastic's BLEError carries a structured `kind`; OrcMesh used to
+    flatten every BLE failure into one generic message, so a radio that simply
+    wasn't advertising was reported the same way as a cable-grade failure and
+    the only advice was "make sure the radio is awake"."""
+
+    @staticmethod
+    def _errors_for(exc):
+        ctrl = MeshtasticController()
+        errors = []
+        ctrl.error_occurred.connect(errors.append)
+        with _patch_ble([], raises=exc):
+            ctrl.connect_ble("AA:BB:CC:DD:EE:FF")
+            _pump_events(500)
+        ctrl.shutdown()
+        assert len(errors) == 1, f"expected exactly one error, got {errors}"
+        return errors[0]
+
+    def test_device_not_found_gets_its_own_error_code(self):
+        exc = BLEInterface.BLEError("nothing found", BLEInterface.BLEError.DEVICE_NOT_FOUND)
+
+        err = self._errors_for(exc)
+
+        assert err.code.value == "ble_device_not_found"
+        assert "Scan" in err.message, "the user needs to be told to scan, not to retry blindly"
+
+    def test_multiple_matching_radios_gets_its_own_error_code(self):
+        exc = BLEInterface.BLEError("too many", BLEInterface.BLEError.MULTIPLE_DEVICES)
+
+        err = self._errors_for(exc)
+
+        assert err.code.value == "ble_multiple_devices"
+
+    def test_a_pairing_failure_is_still_reported_as_pairing(self):
+        exc = BLEInterface.BLEError("Insufficient Authentication", BLEInterface.BLEError.UNKNOWN)
+
+        err = self._errors_for(exc)
+
+        assert err.code.value == "ble_pairing_required"
+
+    def test_a_refused_write_is_reported_as_pairing(self):
+        """The real pre-pairing failure on Windows, verbatim.
+
+        meshtastic wraps every failed ToRadio write in this BLEError with
+        kind="write_error"; the text matches none of the pairing markers, so the
+        user was told to check the radio was awake and never told to pair.
+        """
+        exc = BLEInterface.BLEError(
+            "Error writing BLE (are you in the 'bluetooth' user group? "
+            "did you enter the pairing PIN on your computer?)",
+            BLEInterface.BLEError.WRITE_ERROR,
+        )
+
+        err = self._errors_for(exc)
+
+        assert err.code.value == "ble_pairing_required"
+        assert "pair" in err.message.lower()
+        assert "settings" in err.message.lower()
+
+    def test_bleaks_authentication_failure_is_reported_as_pairing(self):
+        exc = BLEInterface.BLEError("Authentication Failure", BLEInterface.BLEError.UNKNOWN)
+
+        err = self._errors_for(exc)
+
+        assert err.code.value == "ble_pairing_required"
+
+    def test_an_unclassified_failure_stays_generic(self):
+        err = self._errors_for(RuntimeError("something unexpected"))
+
+        assert err.code.value == "ble_connection_failed"
+
+    def test_the_kind_is_read_through_a_wrapped_cause(self):
+        inner = BLEInterface.BLEError("nothing found", BLEInterface.BLEError.DEVICE_NOT_FOUND)
+        outer = RuntimeError("connect failed")
+        outer.__cause__ = inner
+
+        assert _ble_error_kind(outer) == "device_not_found"
+
+    def test_the_kind_is_none_when_no_cause_carries_one(self):
+        assert _ble_error_kind(RuntimeError("plain")) is None
+
+    def test_a_cause_cycle_does_not_hang_the_lookup(self):
+        first = RuntimeError("first")
+        second = RuntimeError("second")
+        first.__cause__ = second
+        second.__cause__ = first
+
+        assert _ble_error_kind(first) is None
