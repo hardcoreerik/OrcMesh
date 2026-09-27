@@ -26,7 +26,8 @@ var lightTileLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z
 });
 
 var _tilesLoaded = 0, _tileErrors = 0;
-[darkTileLayer, lightTileLayer].forEach(function(layer) {
+
+function attachTileDiagnostics(layer, label) {
   layer.on("tileload", function() {
     _tilesLoaded++;
     if (_tilesLoaded === 1) console.log("Map: first basemap tile loaded successfully");
@@ -34,21 +35,78 @@ var _tilesLoaded = 0, _tileErrors = 0;
   layer.on("tileerror", function(e) {
     _tileErrors++;
     if (_tileErrors <= 3) {
-      console.error("Map: basemap tile failed to load — " + (e && e.error ? e.error.message || e.error : "unknown error"));
+      console.error("Map: " + label + " basemap tile failed to load — " + (e && e.error ? e.error.message || e.error : "unknown error"));
     }
   });
+}
+[darkTileLayer, lightTileLayer].forEach(function(layer) {
+  attachTileDiagnostics(layer, "online");
 });
 
 var activeTileLayer = darkTileLayer;
 activeTileLayer.addTo(map);
 
+// Offline basemap state. Python owns the policy — which source is active and
+// which OrcMaps render style matches the current theme — so this file only
+// swaps layers and never decides on its own.
+var offlineLayer = null;
+var offlinePackLabel = null;
+
+function _removeBasemaps() {
+  [darkTileLayer, lightTileLayer, offlineLayer].forEach(function(layer) {
+    if (layer && map.hasLayer(layer)) map.removeLayer(layer);
+  });
+}
+
+/* spec: {kind: "online"} or
+         {kind: "offline", url, attribution, min_zoom, max_zoom, label} */
+function setBasemap(spec) {
+  spec = spec || {};
+  if (spec.kind === "offline" && spec.url) {
+    var layer = L.tileLayer(spec.url, {
+      minZoom: spec.min_zoom,
+      maxZoom: spec.max_zoom,
+      attribution: spec.attribution || "",
+      // Rendered one tile at a time by OrcMesh's loopback tile server: there
+      // are no {s} subdomains and no {r} retina placeholder to substitute.
+      crossOrigin: false,
+    });
+    attachTileDiagnostics(layer, "offline");
+    _removeBasemaps();
+    layer.addTo(map);
+    offlineLayer = layer;
+    offlinePackLabel = spec.label || "pack";
+    // Clamp the viewport to what the pack can render: outside its zoom range
+    // or bounds the server answers 404 and the area simply goes blank.
+    map.setMinZoom(spec.min_zoom);
+    map.setMaxZoom(spec.max_zoom);
+    console.log("Map: basemap = offline pack '" + offlinePackLabel + "' z" +
+                spec.min_zoom + "-" + spec.max_zoom);
+  } else {
+    offlineLayer = null;
+    offlinePackLabel = null;
+    var wanted = document.body.classList.contains("theme-light") ? lightTileLayer : darkTileLayer;
+    _removeBasemaps();
+    wanted.addTo(map);
+    activeTileLayer = wanted;
+    map.setMinZoom(2);
+    map.setMaxZoom(19);
+    console.log("Map: basemap = online tiles");
+  }
+}
+
 function setMapTheme(theme) {
   var isLight = theme === "light";
-  var wanted = isLight ? lightTileLayer : darkTileLayer;
-  if (activeTileLayer !== wanted) {
-    map.removeLayer(activeTileLayer);
-    activeTileLayer = wanted;
-    activeTileLayer.addTo(map);
+  // With an offline pack showing, the theme doesn't select a different tile
+  // URL — it selects a different OrcMaps render style, and Python re-pushes
+  // the basemap with that style right after this returns (see MapWidget).
+  if (!offlineLayer) {
+    var wanted = isLight ? lightTileLayer : darkTileLayer;
+    if (activeTileLayer !== wanted) {
+      _removeBasemaps();
+      wanted.addTo(map);
+      activeTileLayer = wanted;
+    }
   }
   document.body.classList.toggle("theme-light", isLight);
   document.body.classList.toggle("theme-dark", !isLight);

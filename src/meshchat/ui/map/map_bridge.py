@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 log = logging.getLogger(__name__)
 
@@ -35,9 +35,49 @@ class MapBridge(QObject):
         # Buffer calls and flush them once the JS side confirms it's ready.
         self._ready = False
         self._pending_calls: list[str] = []
+        self._ready_watchdog: QTimer | None = None
 
     def set_page(self, page) -> None:
         self._page = page
+
+    # ── Readiness ──────────────────────────────────────────────────────
+
+    @property
+    def is_ready(self) -> bool:
+        return self._ready
+
+    @property
+    def pending_call_count(self) -> int:
+        return len(self._pending_calls)
+
+    def start_ready_watchdog(self, timeout_ms: int) -> None:
+        """Warn if the page never confirms its bridge is up.
+
+        Buffered-forever is the failure mode that looks most like success: the
+        map draws its basemap, every queued update is quietly discarded, and no
+        node pin ever appears. That is what a failed
+        ``vendor/qwebchannel.js`` load used to do — silently, for the whole
+        session (see map_widget.ensure_qwebchannel_asset). This turns it into a
+        startup warning that names the likely cause.
+        """
+        if self._ready:
+            return
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._on_ready_timeout)
+        timer.start(timeout_ms)
+        self._ready_watchdog = timer
+
+    def _on_ready_timeout(self) -> None:
+        if self._ready:
+            return
+        log.warning(
+            "Map: the page never reported its JavaScript bridge ready — %d queued "
+            "call(s) will never run and no node pins will appear. A failed "
+            "vendor/qwebchannel.js load is the usual cause; check the "
+            "[map JS ...] lines above.",
+            len(self._pending_calls),
+        )
 
     def _run(self, js: str) -> None:
         if not self._page:
@@ -84,6 +124,14 @@ class MapBridge(QObject):
     def set_theme(self, theme: str) -> None:
         self._run(f"setMapTheme({json.dumps(theme)})")
 
+    def set_basemap(self, spec: dict) -> None:
+        """Swap the basemap layer (online tiles ↔ an OrcMaps pack).
+
+        Python owns the policy — which source, and which OrcMaps style matches
+        the current theme — so the page only has to swap layers.
+        """
+        self._run(f"setBasemap({json.dumps(spec)})")
+
     # ── JS → Python ────────────────────────────────────────────────────
 
     @Slot("qlonglong")
@@ -104,6 +152,9 @@ class MapBridge(QObject):
     def mapReady(self) -> None:  # noqa: N802
         log.info("Map: JavaScript bridge ready (%d buffered call(s) to flush)", len(self._pending_calls))
         self._ready = True
+        if self._ready_watchdog is not None:
+            self._ready_watchdog.stop()
+            self._ready_watchdog = None
         pending, self._pending_calls = self._pending_calls, []
         for js in pending:
             self._page.runJavaScript(js)

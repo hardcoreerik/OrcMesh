@@ -1,8 +1,9 @@
 """
-Download Leaflet + MarkerCluster assets for offline / packaged use.
+Download Leaflet + MarkerCluster assets for offline / packaged use, and write
+qwebchannel.js from Qt's own resource.
 
 Run manually:  python scripts/fetch_vendors.py
-Called by:     scripts/build.ps1  (auto, when vendor/ is missing)
+Called by:     scripts/build.ps1  (auto, when any vendor asset is missing)
 """
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ import sys
 import urllib.request
 from pathlib import Path
 
-VENDOR = Path(__file__).parent.parent / "src" / "meshchat" / "ui" / "map" / "web" / "vendor"
+ROOT = Path(__file__).parent.parent
+VENDOR = ROOT / "src" / "meshchat" / "ui" / "map" / "web" / "vendor"
 
 LEAFLET_VERSION = "1.9.4"
 MARKERCLUSTER_VERSION = "1.5.3"
@@ -74,6 +76,35 @@ def fetch(url: str, dest: Path) -> None:
         raise
 
 
+def write_qwebchannel_asset() -> bool:
+    """Write vendor/qwebchannel.js from the Qt resource that ships with PySide6.
+
+    index.html needs this file to build its Python↔JS bridge, and nothing used
+    to produce it: this script only downloaded Leaflet/MarkerCluster, so a
+    vendor dir could look complete while the map had no working bridge at all
+    (no node pins, no pin clicks). Qt already ships the matching script, so
+    taking it from there needs no download and can't drift from the installed
+    Qt version.
+    """
+    dest = VENDOR / "qwebchannel.js"
+    if dest.exists() and dest.stat().st_size > 0:
+        print("  skipping qwebchannel.js (already present)")
+        return True
+
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        from meshchat.ui.map.map_widget import ensure_qwebchannel_asset
+    except Exception as exc:
+        print(f"  FAILED: could not import the Qt asset helper: {exc}")
+        return False
+
+    if ensure_qwebchannel_asset(VENDOR.parent) is None:
+        print("  FAILED: Qt resource :/qtwebchannel/qwebchannel.js is unavailable")
+        return False
+    print(f"  wrote qwebchannel.js from the Qt resource ({dest.stat().st_size // 1024} KB)")
+    return True
+
+
 def main() -> int:
     print(f"Fetching Leaflet {LEAFLET_VERSION} + MarkerCluster {MARKERCLUSTER_VERSION}...")
     errors = 0
@@ -87,8 +118,13 @@ def main() -> int:
         except Exception:
             errors += 1
 
+    # Local, offline — deliberately not counted as a download.
+    print("Preparing qwebchannel.js...")
+    if not write_qwebchannel_asset():
+        errors += 1
+
     if errors:
-        print(f"\n{errors} download(s) failed.  Check your internet connection.")
+        print(f"\n{errors} asset(s) could not be prepared.  Check your internet connection.")
         return 1
 
     print(f"\nAll assets saved to {VENDOR}")

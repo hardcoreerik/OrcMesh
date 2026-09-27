@@ -10,11 +10,15 @@
 <link rel="stylesheet" href="vendor/markercluster/MarkerCluster.Default.css" />
 <script src="vendor/leaflet/leaflet.js" onerror="document.write('<script src=\'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\'><\/script>')"></script>
 <script src="vendor/markercluster/leaflet.markercluster.js"></script>
-<!-- Vendored instead of qrc:///qtwebchannel/qwebchannel.js — the qrc path's
-     availability depends on Qt resource registration timing/config and was
-     failing silently in the packaged build, breaking the Python<->JS bridge
-     with no visible error (the page "loaded fine" but bridge stayed null). -->
-<script src="vendor/qwebchannel.js"></script>
+<!-- Prefer the vendored copy — written from Qt's own resource at startup by
+     map_widget.ensure_qwebchannel_asset, and by scripts/fetch_vendors.py at
+     build time. If it can't be produced (e.g. a read-only install), fall back
+     to the qrc path, whose availability depends on Qt resource registration
+     timing/config and has been seen to fail silently in packaged builds.
+     A fallback is strictly better than the previous behaviour, where a missing
+     vendor file left QWebChannel undefined: the page "loaded fine", the bridge
+     stayed null, and no node pin ever appeared. -->
+<script src="vendor/qwebchannel.js" onerror="console.error('vendor/qwebchannel.js failed to load - falling back to qrc:///qtwebchannel/qwebchannel.js');document.write('<script src=\'qrc:///qtwebchannel/qwebchannel.js\'><\/script>')"></script>
 </head>
 <body class="theme-dark">
 <div id="map"></div>

@@ -19,11 +19,27 @@ if (-not (Test-Path ".\.venv\Scripts\python.exe")) {
     exit 1
 }
 
-# ── Vendor Leaflet assets if not already present ────────────────────────────
+# ── Map vendor assets — Leaflet/MarkerCluster plus qwebchannel.js ───────────
+# Checked as a set: gating on leaflet.js alone meant a partially populated
+# vendor/ (Leaflet present, qwebchannel.js missing) was never repaired, so the
+# build shipped a map whose JS bridge could never connect — the basemap drew
+# fine but no node pin ever appeared.
 $vendorDir = "src\meshchat\ui\map\web\vendor"
-if (-not (Test-Path "$vendorDir\leaflet\leaflet.js")) {
-    Write-Host "==> Downloading Leaflet vendor assets..." -ForegroundColor Cyan
+$requiredVendorAssets = @(
+    "$vendorDir\leaflet\leaflet.js",
+    "$vendorDir\leaflet\leaflet.css",
+    "$vendorDir\markercluster\leaflet.markercluster.js",
+    "$vendorDir\qwebchannel.js"
+)
+$missingVendorAssets = @($requiredVendorAssets | Where-Object { -not (Test-Path $_) })
+if ($missingVendorAssets.Count -gt 0) {
+    Write-Host "==> Fetching missing map vendor assets..." -ForegroundColor Cyan
+    $missingVendorAssets | ForEach-Object { Write-Host "    missing: $_" }
     & ".\.venv\Scripts\python.exe" scripts\fetch_vendors.py
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Map vendor assets could not be prepared — the map would ship without a working bridge"
+        exit 1
+    }
 }
 
 # ── Run test suite ──────────────────────────────────────────────────────────

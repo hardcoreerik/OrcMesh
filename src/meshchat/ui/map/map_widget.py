@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSettings, QTimer, QUrl, Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+if TYPE_CHECKING:
+    from meshchat.services.orcmaps import OrcMapsPack, OrcMapsTools
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +25,74 @@ def _map_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+_QWEBCHANNEL_RESOURCE = ":/qtwebchannel/qwebchannel.js"
+
+#: How long the page gets to report its JS bridge as ready before we log a
+#: warning. Generous, because it only has to cover page load: a false positive
+#: would be noise, while a missed one is invisible to everyone.
+_BRIDGE_READY_TIMEOUT_MS = 10_000
+
+
+def ensure_qwebchannel_asset(web_dir: Path = _WEB_DIR) -> Path | None:
+    """Return the page's qwebchannel.js, extracting it from Qt when absent.
+
+    index.html loads ``vendor/qwebchannel.js`` to construct the Python↔JS
+    bridge, but nothing in the build ever produced that file:
+    ``scripts/fetch_vendors.py`` only downloaded Leaflet/MarkerCluster, and
+    ``build.ps1`` only re-ran it when ``vendor/leaflet/leaflet.js`` was missing
+    — so a partially populated ``vendor/`` stayed broken forever. With
+    ``QWebChannel`` undefined the page's JS never calls ``mapReady()``, and
+    ``MapBridge`` then buffered every JS call for the rest of the session: the
+    map rendered a basemap with no node pins and no way to click one, and
+    nothing was logged beyond a console line.
+
+    Qt ships the matching script as a resource, so this needs no network access
+    and cannot drift from the installed Qt version. Returns the asset path, or
+    None when it could not be produced (read-only install, unregistered
+    resource) — index.html falls back to the ``qrc:///`` URL in that case.
+
+    Idempotent: an existing non-empty asset is never rewritten.
+    """
+    target = web_dir / "vendor" / "qwebchannel.js"
+    try:
+        if target.is_file() and target.stat().st_size > 0:
+            return target
+
+        from PySide6.QtCore import QFile, QIODevice
+        # Importing this is what registers the module's qrc resources, making
+        # _QWEBCHANNEL_RESOURCE resolvable at all.
+        from PySide6.QtWebChannel import QWebChannel  # noqa: F401
+
+        source = QFile(_QWEBCHANNEL_RESOURCE)
+        if not source.exists():
+            log.warning(
+                "Qt resource %s is not registered; the map page will use its "
+                "qrc:/// fallback", _QWEBCHANNEL_RESOURCE,
+            )
+            return None
+        if not source.open(QIODevice.OpenModeFlag.ReadOnly):
+            log.warning("Could not open Qt resource %s", _QWEBCHANNEL_RESOURCE)
+            return None
+        try:
+            data = bytes(source.readAll().data())
+        finally:
+            source.close()
+        if not data:
+            log.warning("Qt resource %s was empty", _QWEBCHANNEL_RESOURCE)
+            return None
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        log.info(
+            "Wrote %s (%d bytes) from the Qt resource for the map bridge",
+            target, len(data),
+        )
+        return target
+    except Exception as exc:
+        log.warning("Could not prepare the map's qwebchannel.js asset: %s", exc)
+        return None
 
 
 class MapWidget(QWidget):
@@ -45,6 +117,12 @@ class MapWidget(QWidget):
         # path still has a defined self._bridge to guard against.
         self._bridge = None
         self._did_initial_show = False
+        # Offline (OrcMaps) basemap state. The tile server is owned here
+        # because its lifetime is exactly "this map view is displaying that
+        # pack"; the *choice* of pack lives with the menu that offers it.
+        self._tile_server = None
+        self._offline_pack: OrcMapsPack | None = None
+        self._tile_revision = 0
 
         if _map_available():
             self._build_webengine(layout)
@@ -76,12 +154,20 @@ class MapWidget(QWidget):
         self._bridge.node_clicked.connect(self.node_clicked)
         self._bridge.theme_changed.connect(self._on_theme_changed)
         self._bridge.map_ready.connect(self._push_initial_theme)
+        # Buffering JS calls until the page reports ready is deliberate (its
+        # updateNode() doesn't exist yet), but "buffered forever" is
+        # indistinguishable from a working map that simply has no nodes —
+        # which is exactly what a missing bridge script silently produced.
+        self._bridge.start_ready_watchdog(_BRIDGE_READY_TIMEOUT_MS)
 
         self._channel.registerObject("bridge", self._bridge)
         self._view.page().setWebChannel(self._channel)
         self._view.loadFinished.connect(
             lambda ok: log.info("Map page load finished: %s", "ok" if ok else "FAILED")
         )
+
+        # Produces the bridge script index.html needs, from Qt's own resource.
+        ensure_qwebchannel_asset()
 
         index_path = _WEB_DIR / "index.html"
         if index_path.exists():
@@ -134,6 +220,78 @@ class MapWidget(QWidget):
         if self._bridge:
             self._bridge.set_selected_node(node_num)
 
+    # ------------------------------------------------------------------
+    # Basemap source — online tiles or an offline OrcMaps pack
+    # ------------------------------------------------------------------
+
+    def show_online_basemap(self) -> None:
+        """Go back to the built-in online basemap (CARTO/OSM)."""
+        self._stop_tile_server()
+        self._offline_pack = None
+        if self._bridge:
+            self._bridge.set_basemap({"kind": "online"})
+
+    def show_offline_pack(self, tools: OrcMapsTools, pack: OrcMapsPack) -> None:
+        """Serve the basemap from a local OrcMaps pack.
+
+        Raises OrcMapsError if the tile server can't start, so the caller can
+        report it and fall back to the online basemap instead of leaving the
+        user staring at an empty map.
+        """
+        from meshchat.services.orcmaps import TileServer
+
+        self._stop_tile_server()
+        server = TileServer(tools, [pack], style=self._style_for_theme())
+        server.start()
+        self._tile_server = server
+        self._offline_pack = pack
+        self._push_offline_basemap()
+
+    @property
+    def offline_pack(self) -> OrcMapsPack | None:
+        """The pack currently being served, or None when online."""
+        return self._offline_pack
+
+    def _style_for_theme(self) -> str:
+        from meshchat.services.orcmaps import STYLE_DARK, STYLE_LIGHT
+        theme = QSettings().value(_THEME_SETTINGS_KEY, "dark")
+        return STYLE_LIGHT if theme == "light" else STYLE_DARK
+
+    def _push_offline_basemap(self) -> None:
+        """Push (or re-push) the offline layer to the page.
+
+        Each push bumps a cache-busting revision: a style change renders
+        different pixels for the same tile URL, and Leaflet would otherwise
+        keep showing the previous style's cached images.
+        """
+        server, pack = self._tile_server, self._offline_pack
+        if server is None or pack is None or self._bridge is None:
+            return
+        from meshchat.services.orcmaps import attribution_html
+
+        self._tile_revision += 1
+        self._bridge.set_basemap({
+            "kind": "offline",
+            "url": f"{server.url_template}?v={self._tile_revision}",
+            "attribution": attribution_html(pack),
+            "min_zoom": pack.min_zoom,
+            "max_zoom": pack.max_zoom,
+            "label": pack.display_name,
+        })
+        log.info(
+            "Map: offline basemap from pack '%s' (%s, %s) via %s",
+            pack.display_name, pack.pack_class, pack.zoom_label, server.base_url,
+        )
+
+    def _stop_tile_server(self) -> None:
+        server, self._tile_server = self._tile_server, None
+        if server is not None:
+            server.stop()
+
+    def shutdown(self) -> None:
+        """Release the tile server; the map view is going away."""
+        self._stop_tile_server()
+
     def showEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         super().showEvent(event)
         # The map tab is hidden at startup, so Leaflet's cached container size
@@ -151,9 +309,20 @@ class MapWidget(QWidget):
         theme = QSettings().value(_THEME_SETTINGS_KEY, "dark")
         if self._bridge:
             self._bridge.set_theme(theme)
+        # A pack restored at startup may have been pushed while the page was
+        # still loading (buffered, then flushed by mapReady). Re-push now that
+        # the page is definitely ready, so the style always matches the theme.
+        if self._tile_server is not None:
+            self._push_offline_basemap()
 
     def _on_theme_changed(self, theme: str) -> None:
         QSettings().setValue(_THEME_SETTINGS_KEY, theme)
+        if self._tile_server is not None:
+            # Offline tiles are rendered per style, so a theme change means
+            # re-rendering: swap the OrcMaps style and push a new revision.
+            from meshchat.services.orcmaps import STYLE_DARK, STYLE_LIGHT
+            self._tile_server.set_style(STYLE_LIGHT if theme == "light" else STYLE_DARK)
+            self._push_offline_basemap()
 
 
 _PLACEHOLDER_HTML = """

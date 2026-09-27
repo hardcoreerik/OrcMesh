@@ -9,9 +9,9 @@ __pycache__/
 .venv/
 venv/
 
-# Build artifacts
-build/
-dist/
+# Build artifacts (PyInstaller work dirs and output, incl. one-off review builds)
+build*/
+dist*/
 
 # Vendored web assets — fetched by scripts/fetch_vendors.py
 src/meshchat/ui/map/web/vendor/
