@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -26,8 +27,10 @@ from meshchat.controllers.meshtastic_controller import (
     MeshtasticController,
     MessageStatus,
 )
+from meshchat.controllers.orcmaps_controller import OrcMapsController
 from meshchat.models.connection_profile import ConnectionProfile
 from meshchat.models.network_session import NetworkSession
+from meshchat.services import orcmaps
 from meshchat.services.connection_supervisor import ConnectionSupervisor
 from meshchat.services.monitor_store import MonitorStore
 from meshchat.services.packet_ingestor import PacketIngestor
@@ -42,6 +45,10 @@ log = logging.getLogger(__name__)
 
 _LOG_DIR = Path(platformdirs.user_data_dir("MeshChat", appauthor=False)) / "logs"
 _SETTINGS_KEY = "MeshChat/MainWindow"
+
+#: Persisted basemap choice: "online", or the stem of an OrcMaps pack.
+_BASEMAP_SETTINGS_KEY = "MeshChat/Map/source"
+_ONLINE_BASEMAP_LABEL = "Online · OpenStreetMap / CARTO tiles"
 
 
 # ── Packet export worker ──────────────────────────────────────────────────
@@ -103,6 +110,7 @@ class MainWindow(QMainWindow):
         self._controller = MeshtasticController(self)
         from meshchat.controllers.firmware_controller import FirmwareController
         self._firmware_controller = FirmwareController(self)
+        self._orcmaps = OrcMapsController(self)
         self._session = NetworkSession.new()
         self._store = MonitorStore()
         self._ingestor = PacketIngestor(self._session, self._store)
@@ -301,6 +309,15 @@ class MainWindow(QMainWindow):
         firmware.log.connect(self._device_page.append_firmware_log)
         firmware.completed.connect(self._on_firmware_completed)
 
+        # Maps tab: OrcMaps pack management. MainWindow owns discovery (it knows
+        # where the checkout and packs are) and the Device page owns the UI.
+        self._device_page.maps_refresh_requested.connect(self._refresh_map_packs)
+        self._device_page.maps_verify_requested.connect(self._verify_map_directory)
+        self._device_page.maps_provision_requested.connect(self._provision_map_pack)
+        self._orcmaps.log.connect(self._device_page.append_maps_log)
+        self._orcmaps.completed.connect(self._on_orcmaps_completed)
+        self._ingestor.position_updated.connect(self._on_position_for_device_page)
+
         # Ingestor signals
         self._ingestor.packet_ingested.connect(self._monitor_page.on_packet_ingested)
         self._ingestor.node_updated.connect(self._on_node_snapshot)
@@ -342,6 +359,13 @@ class MainWindow(QMainWindow):
         if geom:
             self.restoreGeometry(geom)
 
+        # Re-apply the saved basemap source: an offline OrcMaps pack, or the
+        # online tiles. Runs after the map view exists.
+        self._restore_basemap_source()
+
+        # Populate the Maps tab with the packs OrcMaps can see.
+        self._refresh_map_packs()
+
     # ------------------------------------------------------------------
     # Menu
     # ------------------------------------------------------------------
@@ -366,6 +390,18 @@ class MainWindow(QMainWindow):
         quit_act.triggered.connect(self.close)
         file_menu.addAction(quit_act)
 
+        # ── Map menu ──────────────────────────────────────────────────
+        # Basemap source: the built-in online tiles, or a local OrcMaps pack
+        # rendered on this machine by OrcMaps' own host renderer. OrcMaps is a
+        # separate AGPL-3 project that OrcMesh drives as a child process and
+        # never links — see docs/orcmaps-integration.md.
+        map_menu = menu_bar.addMenu("Map")
+
+        self._basemap_act = QAction("Basemap Source…", self)
+        self._basemap_act.setToolTip("Choose the online basemap or an offline OrcMaps pack")
+        self._basemap_act.triggered.connect(self._choose_basemap_source)
+        map_menu.addAction(self._basemap_act)
+
         help_menu = menu_bar.addMenu("Help")
 
         log_act = QAction("Open Log Folder", self)
@@ -381,6 +417,165 @@ class MainWindow(QMainWindow):
         about_act = QAction("About OrcMesh", self)
         about_act.triggered.connect(self._show_about)
         help_menu.addAction(about_act)
+
+    # ------------------------------------------------------------------
+    # Map basemap source (online tiles ↔ an offline OrcMaps pack)
+    # ------------------------------------------------------------------
+
+    def _discover_map_packs(self) -> tuple[orcmaps.OrcMapsTools | None, list[orcmaps.OrcMapsPack], str]:
+        """Return (tools, packs, reason); reason explains an empty result."""
+        tools = orcmaps.find_tools()
+        if tools is None:
+            return None, [], (
+                "OrcMaps' host tools were not found, so offline map packs cannot be "
+                "rendered.\n\nBuild them from your OrcMaps checkout:\n\n"
+                "  cmake -S <orcmaps>\\tools\\pack-inspect -B <orcmaps>\\build-pack-inspect\n"
+                "  cmake --build <orcmaps>\\build-pack-inspect --config Release\n\n"
+                "Or set ORCMESH_ORCMAPS_HOME to that checkout."
+            )
+        directories = orcmaps.default_pack_directories(tools)
+        packs = orcmaps.discover_packs(directories)
+        if not packs:
+            log.info("No OrcMaps map packs found in %s", directories)
+            looked = "\n".join(f"  {directory}" for directory in directories)
+            return tools, [], (
+                "No OrcMaps map packs were found. A pack is a .pmtiles archive with "
+                "a matching .manifest.json next to it.\n\nLooked in:\n" + looked
+            )
+        log.info(
+            "Map packs available: %s",
+            "; ".join(f"{pack.display_name} ({pack.zoom_label}, {pack.pack_class})" for pack in packs),
+        )
+        return tools, packs, ""
+
+    @staticmethod
+    def _pack_label(pack: orcmaps.OrcMapsPack) -> str:
+        size = f", {pack.size_bytes / 1e6:.0f} MB" if pack.size_bytes else ""
+        return f"Offline · {pack.display_name} ({pack.zoom_label}, {pack.pack_class}{size})"
+
+    def _choose_basemap_source(self) -> None:
+        tools, packs, reason = self._discover_map_packs()
+        if tools is None or not packs:
+            QMessageBox.information(self, "Offline Maps Unavailable", reason)
+            return
+
+        labels = [_ONLINE_BASEMAP_LABEL] + [self._pack_label(pack) for pack in packs]
+        active = self._monitor_page.map_widget.offline_pack
+        current = next(
+            (i for i, pack in enumerate(packs, start=1) if active and pack.stem == active.stem),
+            0,
+        )
+        choice, accepted = QInputDialog.getItem(
+            self,
+            "Basemap Source",
+            "Offline packs are rendered locally by OrcMaps — no network is used.",
+            labels,
+            current,
+            False,
+        )
+        if accepted:
+            self._apply_basemap_source(labels.index(choice), tools, packs)
+
+    def _apply_basemap_source(
+        self, index: int, tools: orcmaps.OrcMapsTools, packs: list[orcmaps.OrcMapsPack],
+    ) -> None:
+        """Switch basemap by dialog index (0 = online), remembering the choice."""
+        settings = QSettings()
+        map_widget = self._monitor_page.map_widget
+        if index <= 0:
+            map_widget.show_online_basemap()
+            settings.setValue(_BASEMAP_SETTINGS_KEY, "online")
+            self._status_bar.showMessage("Basemap: online tiles", 6000)
+            return
+
+        pack = packs[index - 1]
+        try:
+            map_widget.show_offline_pack(tools, pack)
+        except orcmaps.OrcMapsError as exc:
+            log.exception("Offline basemap failed for pack %s", pack.stem)
+            QMessageBox.warning(
+                self, "Offline Basemap Failed",
+                f"Could not render tiles from '{pack.display_name}'.\n\n{exc}\n\n"
+                "Falling back to the online basemap.",
+            )
+            map_widget.show_online_basemap()
+            settings.setValue(_BASEMAP_SETTINGS_KEY, "online")
+            return
+
+        settings.setValue(_BASEMAP_SETTINGS_KEY, pack.stem)
+        # The manifest's required attribution is drawn on the map itself too;
+        # repeating it here keeps it visible when that control is collapsed.
+        self._status_bar.showMessage(
+            f"Basemap: {pack.display_name} ({pack.zoom_label}, {pack.pack_class}) — "
+            f"{pack.attribution_text}",
+            15000,
+        )
+
+    def _restore_basemap_source(self) -> None:
+        """Re-apply the saved basemap choice, falling back to online tiles."""
+        stem = str(QSettings().value(_BASEMAP_SETTINGS_KEY, "online") or "online")
+        if stem == "online":
+            return
+        tools, packs, _reason = self._discover_map_packs()
+        if tools is None:
+            return
+        pack = next((p for p in packs if p.stem == stem), None)
+        if pack is None:
+            log.info("Saved basemap pack %r is no longer available; using online tiles", stem)
+            QSettings().setValue(_BASEMAP_SETTINGS_KEY, "online")
+            return
+        self._apply_basemap_source(packs.index(pack) + 1, tools, packs)
+
+    # ------------------------------------------------------------------
+    # Maps tab — OrcMaps pack management
+    # ------------------------------------------------------------------
+
+    def _refresh_map_packs(self) -> None:
+        tools, packs, reason = self._discover_map_packs()
+        self._device_page.set_map_packs(
+            packs, tools_available=tools is not None, reason=reason,
+        )
+
+    def _verify_map_directory(self, directory: str) -> None:
+        tools, _packs, reason = self._discover_map_packs()
+        if tools is None:
+            self._device_page.set_maps_busy(False)
+            QMessageBox.information(self, "Offline Maps Unavailable", reason)
+            return
+        self._device_page.set_maps_busy(True)
+        # The service resolves a card root to its orcmaps/ directory — handing
+        # the root straight to the tool reports "no usable packs" for a good card.
+        self._orcmaps.verify(tools, Path(directory))
+
+    def _provision_map_pack(self, params: dict) -> None:
+        tools, _packs, reason = self._discover_map_packs()
+        if tools is None or tools.provision_script is None:
+            self._device_page.set_maps_busy(False)
+            QMessageBox.information(self, "Offline Maps Unavailable", reason)
+            return
+        request = orcmaps.PinPackRequest(
+            source_manifest=Path(str(params["source_manifest"])),
+            lat=float(params["lat"]),
+            lon=float(params["lon"]),
+            radius_km=float(params["radius_km"]),
+            name=str(params["name"]),
+            display_name=str(params.get("display_name") or ""),
+            card_root=Path(str(params["card_root"])),
+            dry_run=bool(params.get("dry_run", False)),
+        )
+        self._orcmaps.provision(tools, request)
+
+    def _on_orcmaps_completed(self, operation: str, success: bool, detail: str) -> None:
+        self._device_page.maps_operation_completed(operation, success, detail)
+        self._status_bar.showMessage(detail, 10000 if success else 15000)
+        if success and operation == "provision":
+            # The card's contents may have changed; keep the pack list honest.
+            self._refresh_map_packs()
+
+    def _on_position_for_device_page(self, sample) -> None:
+        """Keep the pack cutter's "around here" prefill current."""
+        if sample.node_num is not None and sample.node_num == self._local_node_num:
+            self._device_page.set_local_position(sample.latitude, sample.longitude)
 
     # ------------------------------------------------------------------
     # Export
@@ -570,7 +765,20 @@ class MainWindow(QMainWindow):
     def _on_state_changed(self, state: ConnectionState, detail: str) -> None:
         self._conn_bar.set_state(state, detail)
         self._monitor_page.set_connection_state(state)
-        status_map = {
+        self._status_bar.showMessage(self._status_message(state, detail))
+        self._is_connected = state == ConnectionState.CONNECTED
+        if not self._is_connected:
+            self._chat_view.set_send_enabled(False)
+
+    def _status_message(self, state: ConnectionState, detail: str) -> str:
+        """Status-bar text for a connection state.
+
+        The CONNECTING case spells out how long Bluetooth takes: discovery plus
+        pairing plus config sync runs into tens of seconds, and "Connecting to
+        <address>…" on its own for that long is indistinguishable from a
+        connection that has already failed silently.
+        """
+        message = {
             ConnectionState.DISCONNECTED:  "Disconnected",
             ConnectionState.SCANNING:      "Scanning for BLE devices…",
             ConnectionState.CONNECTING:    f"Connecting to {detail}…",
@@ -578,11 +786,12 @@ class MainWindow(QMainWindow):
             ConnectionState.CONNECTED:     f"Connected — {detail}",
             ConnectionState.DISCONNECTING: "Disconnecting…",
             ConnectionState.ERROR:         f"Error: {detail}",
-        }
-        self._status_bar.showMessage(status_map.get(state, state.value))
-        self._is_connected = state == ConnectionState.CONNECTED
-        if not self._is_connected:
-            self._chat_view.set_send_enabled(False)
+        }.get(state, state.value)
+        if state is ConnectionState.CONNECTING:
+            expectation = self._conn_bar.connecting_expectation()
+            if expectation:
+                message += f"  ({expectation})"
+        return message
 
     def _on_connected(self, summary) -> None:
         name = summary.long_name or summary.short_name or summary.node_id or "Radio"
@@ -591,6 +800,12 @@ class MainWindow(QMainWindow):
         self._monitor_page.set_local_node(summary.node_num)
         self._channel_list.set_local_node(summary.node_num)
         self._local_node_num = summary.node_num
+        # Prefill the Maps tab's pack cutter from this radio's last known
+        # position, so it is usable before any live position arrives.
+        if summary.node_num is not None:
+            latest = self._store.read_latest_position(summary.node_num)
+            if latest and latest.get("latitude") is not None and latest.get("longitude") is not None:
+                self._device_page.set_local_position(latest["latitude"], latest["longitude"])
         self._status_bar.showMessage(f"Connected to {name}")
         # Stamp the session with transport details from the active profile.
         if self._supervisor._profile is not None:
@@ -933,6 +1148,10 @@ class MainWindow(QMainWindow):
         settings.setValue(f"{_SETTINGS_KEY}/geometry", self.saveGeometry())
         self._spectrum_page.shutdown()
         self._firmware_controller.shutdown()
+        # Stops the offline basemap's tile server thread (OrcMaps renders).
+        self._monitor_page.shutdown_map()
+        # Terminates any running OrcMaps pack build rather than blocking exit.
+        self._orcmaps.shutdown()
         self._controller.shutdown()
         self._store.shutdown()
         if self._export_thread is not None:

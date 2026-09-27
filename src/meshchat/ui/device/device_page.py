@@ -6,9 +6,13 @@ from typing import Any
 from PySide6.QtCore import QIODevice, QTime, Signal
 from PySide6.QtSerialPort import QSerialPort
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -23,10 +27,14 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
+
+from meshchat.services.orcmaps import valid_pack_name
 
 
 class DevicePage(QWidget):
@@ -49,6 +57,10 @@ class DevicePage(QWidget):
     profile_restore_requested = Signal(str)
     serial_console_start_requested = Signal(str, int)
     serial_console_stop_requested = Signal(str)
+    # Maps tab: pack management is host-side (OrcMaps), not radio-side.
+    maps_refresh_requested = Signal()
+    maps_verify_requested = Signal(str)          # directory (card root or pack dir)
+    maps_provision_requested = Signal(object)    # params dict for PinPackRequest
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -60,6 +72,12 @@ class DevicePage(QWidget):
         self._connected = False
         self._profile_backed_up = False
         self._serial_console_port = ""
+        # Maps tab state (host-side OrcMaps pack management).
+        self._map_packs: list = []
+        self._maps_tools_available = False
+        self._local_lat: float | None = None
+        self._local_lon: float | None = None
+        self._map_destination = ""
         self._serial = QSerialPort(self)
         self._firmware_log: QTextEdit
         self._serial_log: QTextEdit
@@ -90,6 +108,7 @@ class DevicePage(QWidget):
         self._build_settings_tab()
         self._build_channels_tab()
         self._build_firmware_tab()
+        self._build_maps_tab()
 
         self.set_connected(False)
 
@@ -756,3 +775,257 @@ class DevicePage(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         ) == QMessageBox.StandardButton.Yes
+
+    # ------------------------------------------------------------------
+    # Maps tab — OrcMaps offline pack management (host-side, not radio-side)
+    # ------------------------------------------------------------------
+
+    def _build_maps_tab(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        intro = QLabel(
+            "Offline map packs for OrcMaps devices. OrcMesh drives OrcMaps' own host "
+            "tools as separate processes — it never links them — and every pack keeps "
+            "the source, license, and attribution recorded in its manifest."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._maps_status = QLabel("Looking for OrcMaps packs…")
+        self._maps_status.setWordWrap(True)
+        self._maps_status.setStyleSheet("color: #7A8FBF;")
+        layout.addWidget(self._maps_status)
+
+        self._pack_table = QTableWidget(0, 6)
+        self._pack_table.setHorizontalHeaderLabels(
+            ["Name", "Zoom", "Class", "Size", "Region", "Attribution"]
+        )
+        self._pack_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._pack_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._pack_table.verticalHeader().setVisible(False)
+        self._pack_table.setWordWrap(False)
+        self._pack_table.horizontalHeader().setStretchLastSection(True)
+        for column, width in enumerate((180, 60, 60, 70, 170, 260)):
+            self._pack_table.setColumnWidth(column, width)
+        layout.addWidget(self._pack_table, 1)
+
+        buttons = QHBoxLayout()
+        self._maps_rescan = QPushButton("Rescan Packs")
+        self._maps_rescan.clicked.connect(self.maps_refresh_requested)
+        buttons.addWidget(self._maps_rescan)
+
+        self._maps_verify = QPushButton("Verify Card / Folder…")
+        self._maps_verify.setToolTip(
+            "Run OrcMaps' own pack verification — the same check the firmware runs"
+        )
+        self._maps_verify.clicked.connect(self._verify_maps_directory)
+        buttons.addWidget(self._maps_verify)
+
+        self._maps_cut = QPushButton("Cut Pack Around a Point…")
+        self._maps_cut.setToolTip("Build a small pack from a source pack, centred on a coordinate")
+        self._maps_cut.clicked.connect(self._cut_pack)
+        buttons.addWidget(self._maps_cut)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+
+        self._maps_log = QTextEdit()
+        self._maps_log.setReadOnly(True)
+        self._maps_log.setPlaceholderText(
+            "Pack verification and build output appears here. Secrets are never logged."
+        )
+        self._maps_log.document().setMaximumBlockCount(5000)
+
+        log_row = QHBoxLayout()
+        log_row.addWidget(QLabel("OrcMaps output"))
+        log_row.addStretch()
+        clear = QPushButton("Clear")
+        clear.setFixedWidth(60)
+        clear.clicked.connect(lambda: self._maps_log.clear())
+        log_row.addWidget(clear)
+        copy = QPushButton("Copy")
+        copy.setFixedWidth(60)
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(self._maps_log.toPlainText()))
+        log_row.addWidget(copy)
+        layout.addLayout(log_row)
+        layout.addWidget(self._maps_log, 1)
+
+        self._tabs.addTab(page, "Maps")
+
+    def set_map_packs(self, packs, tools_available: bool, reason: str) -> None:
+        """Fill the pack table (MainWindow owns discovery and calls this)."""
+        self._map_packs = list(packs)
+        self._maps_tools_available = tools_available
+        self._pack_table.setRowCount(0)
+        for pack in self._map_packs:
+            row = self._pack_table.rowCount()
+            self._pack_table.insertRow(row)
+            size = f"{pack.size_bytes / 1e6:.0f} MB" if pack.size_bytes else "—"
+            for column, text in enumerate((
+                pack.display_name, pack.zoom_label, pack.pack_class, size,
+                pack.region_name or "—", pack.attribution_text or "—",
+            )):
+                self._pack_table.setItem(row, column, QTableWidgetItem(text))
+        if tools_available:
+            note = f" {reason}" if reason else ""
+            self._maps_status.setText(
+                f"OrcMaps found — {len(self._map_packs)} pack(s) available.{note}"
+            )
+        else:
+            self._maps_status.setText(reason or "OrcMaps tooling was not found.")
+        self._maps_cut.setEnabled(bool(self._map_packs))
+        self._maps_verify.setEnabled(tools_available)
+
+    def append_maps_log(self, line: str) -> None:
+        self._maps_log.append(line)
+
+    def set_maps_busy(self, busy: bool) -> None:
+        for widget in (self._maps_rescan, self._maps_verify, self._maps_cut):
+            widget.setEnabled(not busy)
+        if not busy:
+            # Restore, per widget, the state that discovery left it in — going busy
+            # must not resurrect a control that cannot work (e.g. Verify without tools).
+            self._maps_cut.setEnabled(bool(self._map_packs))
+            self._maps_verify.setEnabled(self._maps_tools_available)
+
+    def set_local_position(self, lat: float | None, lon: float | None) -> None:
+        """Remember where the radio says it is, to prefill the cut dialog."""
+        self._local_lat, self._local_lon = lat, lon
+
+    def maps_operation_completed(self, operation: str, success: bool, detail: str) -> None:
+        self.set_maps_busy(False)
+        self._maps_status.setText(detail)
+        self.append_maps_log(("OK: " if success else "ERROR: ") + detail)
+
+    def _verify_maps_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select a card root or an orcmaps pack directory", self._map_destination
+        )
+        if not directory:
+            return
+        self._map_destination = directory
+        self.append_maps_log(f"Verifying {directory} with OrcMaps…")
+        self.maps_verify_requested.emit(directory)
+
+    def _cut_pack(self) -> None:
+        if not self._map_packs:
+            QMessageBox.information(
+                self, "No Source Pack",
+                "Cutting a pack needs an existing OrcMaps pack to cut from.\n\n"
+                "Put a .pmtiles archive and its .manifest.json into OrcMaps' data/local "
+                "directory (or point ORCMESH_PACK_DIR at one), then rescan.",
+            )
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Cut a Map Pack Around a Point")
+        form = QFormLayout(dialog)
+
+        source = QComboBox()
+        for pack in self._map_packs:
+            source.addItem(f"{pack.display_name} ({pack.zoom_label})", pack.manifest)
+        form.addRow("Source pack", source)
+
+        if self._local_lat is not None and self._local_lon is not None:
+            hint = QLabel("Prefilled from the connected radio's last known position.")
+        else:
+            hint = QLabel(
+                "Connect a radio that reports a position to prefill these, or type them."
+            )
+        hint.setWordWrap(True)
+        form.addRow("", hint)
+
+        lat = QLineEdit(f"{self._local_lat:.6f}" if self._local_lat is not None else "")
+        lon = QLineEdit(f"{self._local_lon:.6f}" if self._local_lon is not None else "")
+        form.addRow("Latitude", lat)
+        form.addRow("Longitude", lon)
+
+        radius = QDoubleSpinBox()
+        radius.setRange(0.5, 1000.0)
+        radius.setDecimals(1)
+        radius.setValue(25.0)
+        radius.setSuffix(" km")
+        form.addRow("Radius", radius)
+
+        name = QLineEdit("pin-25km")
+        name.setToolTip("Saved as <name>.pmtiles on the card — letters, digits, . and - only")
+        form.addRow("Pack name", name)
+
+        display = QLineEdit()
+        display.setPlaceholderText("Optional label shown on the device")
+        form.addRow("Display name", display)
+
+        dest_row = QWidget()
+        dest_layout = QHBoxLayout(dest_row)
+        dest_layout.setContentsMargins(0, 0, 0, 0)
+        destination = QLineEdit(self._map_destination)
+
+        def _choose_destination() -> None:
+            chosen = QFileDialog.getExistingDirectory(
+                dialog, "Select the card root", destination.text()
+            )
+            if chosen:
+                destination.setText(chosen)
+
+        choose = QPushButton("Choose…")
+        choose.setFixedWidth(80)
+        choose.clicked.connect(_choose_destination)
+        dest_layout.addWidget(destination, 1)
+        dest_layout.addWidget(choose)
+        form.addRow("Card root", dest_row)
+
+        dry_run = QCheckBox("Preview only (report the plan, cut nothing)")
+        dry_run.setChecked(True)
+        form.addRow("", dry_run)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        try:
+            latitude = float(lat.text())
+            longitude = float(lon.text())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Position", "Latitude and longitude must be numbers.")
+            return
+        if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+            QMessageBox.warning(self, "Invalid Position", "Coordinates are outside valid ranges.")
+            return
+
+        pack_name = name.text().strip()
+        if not valid_pack_name(pack_name):
+            QMessageBox.warning(
+                self, "Invalid Pack Name",
+                "Pack names may contain only letters, digits, periods and hyphens.",
+            )
+            return
+
+        card_root = destination.text().strip()
+        if not card_root:
+            QMessageBox.warning(
+                self, "No Destination", "Choose the card root the pack should be staged into."
+            )
+            return
+
+        self._map_destination = card_root
+        self.set_maps_busy(True)
+        self.append_maps_log(
+            f"Cutting '{pack_name}' around {latitude:.5f}, {longitude:.5f} "
+            f"({radius.value():g} km)" + (" — preview only" if dry_run.isChecked() else "")
+        )
+        self.maps_provision_requested.emit({
+            "source_manifest": source.currentData(),
+            "lat": latitude,
+            "lon": longitude,
+            "radius_km": radius.value(),
+            "name": pack_name,
+            "display_name": display.text().strip(),
+            "card_root": card_root,
+            "dry_run": dry_run.isChecked(),
+        })
