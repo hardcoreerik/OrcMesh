@@ -170,9 +170,18 @@ class MonitorStore:
         thread). Overwrites any existing value for the same key."""
         self._enqueue(("setting", (key, value)))
 
-    def _enqueue(self, item: Any) -> None:
+    def _enqueue(self, item: Any) -> bool:
+        """Queue one write. Returns False when the queue was full and the
+        item was dropped.
+
+        Callers whose contract is just "shoot and forget" can ignore the
+        result, but any caller that waits on a completion signal (backup())
+        must check it: a dropped item never reaches the writer thread, so the
+        event it would have set is never set.
+        """
         try:
             self._write_q.put_nowait(item)
+            return True
         except queue.Full:
             with self._health_lock:
                 self._dropped_count += 1
@@ -182,6 +191,7 @@ class MonitorStore:
                 "(%d dropped since open)",
                 self._write_q.maxsize, total_dropped,
             )
+            return False
 
     def health(self) -> DatabaseWriterHealth:
         """Point-in-time snapshot for a degraded-storage indicator."""
@@ -470,7 +480,15 @@ class MonitorStore:
             raise RuntimeError("Writer thread is not alive; cannot take a consistent backup")
         done = threading.Event()
         result: list[Path | Exception] = []
-        self._enqueue(("backup", (dest, done, result)))
+        # Checked, not ignored: if the queue is full this request is dropped
+        # on the floor and `done` is never set, so falling through to the
+        # wait below meant blocking the caller for the full timeout and then
+        # blaming the writer thread ("may be unresponsive") for a queue that
+        # was simply full.
+        if not self._enqueue(("backup", (dest, done, result))):
+            raise RuntimeError(
+                "MonitorStore write queue is full; could not queue the backup request"
+            )
         if not done.wait(timeout=timeout):
             raise RuntimeError(f"Backup did not complete within {timeout}s — writer may be unresponsive")
         if result and isinstance(result[0], Exception):

@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from collections import OrderedDict, deque
+from dataclasses import replace
 from datetime import datetime, timezone
 from threading import Lock
 
@@ -33,36 +34,12 @@ _DEDUP_TTL_S = 120  # 2-minute dedup window
 def _copy_node_snapshot(node: NodeSnapshot) -> NodeSnapshot:
     """Return an immutable-in-spirit copy of a live NodeSnapshot to emit over
     a signal, so consumers on other threads never see a partially-mutated
-    object mid-update."""
-    return NodeSnapshot(
-        node_num=node.node_num,
-        node_id=node.node_id,
-        long_name=node.long_name,
-        short_name=node.short_name,
-        role=node.role,
-        hw_model=node.hw_model,
-        first_seen=node.first_seen,
-        last_heard=node.last_heard,
-        packet_count=node.packet_count,
-        text_count=node.text_count,
-        position_count=node.position_count,
-        telemetry_count=node.telemetry_count,
-        last_snr=node.last_snr,
-        last_rssi=node.last_rssi,
-        last_hops_used=node.last_hops_used,
-        last_hop_start=node.last_hop_start,
-        last_via_mqtt=node.last_via_mqtt,
-        via_mqtt_count=node.via_mqtt_count,
-        rf_count=node.rf_count,
-        last_telemetry_at=node.last_telemetry_at,
-        battery_level=node.battery_level,
-        voltage=node.voltage,
-        channel_utilization=node.channel_utilization,
-        air_util_tx=node.air_util_tx,
-        temperature_c=node.temperature_c,
-        relative_humidity=node.relative_humidity,
-        barometric_pressure_hpa=node.barometric_pressure_hpa,
-    )
+    object mid-update.
+
+    dataclasses.replace() copies every field automatically, so adding a field
+    to NodeSnapshot can no longer silently drop it from the emitted snapshot
+    (the previous hand-rolled field-by-field copy would)."""
+    return replace(node)
 
 
 def _get(d: dict, *keys, default=None):
@@ -81,11 +58,68 @@ def _parse_dt(iso_str: str | None) -> datetime | None:
         return None
 
 
+#: Enum name → number for meshtastic.protobuf.PortNum, built lazily on first
+#: use. See _coerce_portnum for why this lookup has to exist at all.
+_PORTNUM_NAMES: dict[str, int] | None = None
+
+
+def _portnum_names() -> dict[str, int]:
+    global _PORTNUM_NAMES
+    if _PORTNUM_NAMES is None:
+        try:
+            from meshtastic.protobuf import portnums_pb2
+            _PORTNUM_NAMES = {
+                name: int(value) for name, value in portnums_pb2.PortNum.items()
+            }
+        except Exception as exc:
+            # meshtastic is a hard dependency, so this should not happen —
+            # but a name→number map we can't build must degrade to "unknown
+            # port" rather than taking down ingestion of every packet.
+            log.warning("Could not build the Meshtastic PortNum name map: %s", exc)
+            _PORTNUM_NAMES = {}
+    return _PORTNUM_NAMES
+
+
+def _coerce_portnum(value: object) -> int | None:
+    """Normalize a raw ``decoded.portnum`` to its integer value.
+
+    The meshtastic library builds the packet dicts it publishes with
+    ``google.protobuf.json_format.MessageToDict``, which renders enum fields
+    as their *name* — so ``decoded["portnum"]`` actually arrives as
+    ``"TEXT_MESSAGE_APP"``, not ``1``. (The library's own code relies on
+    this: mesh_interface.py compares against ``"POSITION_APP"`` /
+    ``"TELEMETRY_APP"``.) Every consumer downstream compares against the int
+    constants in ``analytics.packet_classifier``, so the value has to be
+    normalized here, at the one place wire data enters the app.
+
+    Treating it as an int silently disabled whole features: nothing matched
+    ``PORTNUM_POSITION``, so position packets never reached ``_handle_position``
+    — no live map updates, no ``positions`` rows — and telemetry was dropped
+    the same way. The int path is kept because hand-built packets, the test
+    fixtures, and older library versions legitimately pass a number.
+    """
+    if isinstance(value, bool):  # bool is an int subclass; not a portnum
+        return None
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, str):
+        return None
+    mapped = _portnum_names().get(value)
+    if mapped is not None:
+        return mapped
+    try:
+        return int(value, 0)  # numeric string, e.g. after a JSON round-trip
+    except ValueError:
+        return None
+
+
 def _dedup_key(pkt: dict) -> str | None:
     sender = _get(pkt, "from", "fromNum")
     pid = pkt.get("id")
     decoded = pkt.get("decoded", {})
-    portnum = _get(decoded, "portnum")
+    # Normalized, so the same packet keyed by name ("POSITION_APP") and by
+    # number (3) still dedupes against each other.
+    portnum = _coerce_portnum(_get(decoded, "portnum"))
     channel = _get(pkt, "channel", "channelIndex") or 0
 
     # pid is not None, not truthy `and pid`: a packet id of 0 is a
@@ -244,7 +278,10 @@ class PacketIngestor(QObject):
     def _normalize(self, raw: dict) -> NetworkPacket | None:
         try:
             decoded = raw.get("decoded", {}) or {}
-            portnum = _get(decoded, "portnum")
+            # _coerce_portnum, not the raw value: this arrives as an enum
+            # *name* from the meshtastic library and must become an int here
+            # or none of the PORTNUM_* comparisons below ever match.
+            portnum = _coerce_portnum(_get(decoded, "portnum"))
             portnum_name = classify_portnum(portnum)
 
             sender_num = _get(raw, "from", "fromNum")
@@ -410,10 +447,29 @@ class PacketIngestor(QObject):
             lon_f = lon / 1e7 if lon is not None else None
 
             alt = pos_data.get("altitude")
-            speed = pos_data.get("groundSpeed") or pos_data.get("ground_speed")
-            heading = pos_data.get("groundTrack") or pos_data.get("ground_track")
+            # _get(...) + an is-not-None guard, not `a or b`: a stationary
+            # node legitimately reports groundSpeed 0, and groundTrack 0 is
+            # due north — `or` discarded both and fell through to the absent
+            # snake_case key, so speed/heading were stored as NULL for
+            # exactly the readings most nodes produce. Same zero-value class
+            # of bug documented on node_num handling elsewhere in this file
+            # (note `alt` above was always correct).
+            speed = _get(pos_data, "groundSpeed", "ground_speed")
+            heading = _get(pos_data, "groundTrack", "ground_track")
             if heading is not None:
                 heading = heading / 100.0  # convert to degrees
+
+            # Position.time is unix seconds, and 0 means the radio didn't set
+            # it (same convention as the `if rx_ts:` handling above).
+            # positions.position_time was previously written as NULL for
+            # every live packet because nothing ever read it off the payload.
+            pos_ts = _get(pos_data, "time")
+            position_time: datetime | None = None
+            if pos_ts:
+                try:
+                    position_time = datetime.fromtimestamp(float(pos_ts), tz=timezone.utc)
+                except (OSError, OverflowError, ValueError):
+                    position_time = None
 
             sample = PositionSample(
                 node_num=pkt.sender_num,
@@ -423,7 +479,8 @@ class PacketIngestor(QObject):
                 altitude_m=float(alt) if alt is not None else None,
                 speed_ms=float(speed) if speed is not None else None,
                 heading_deg=float(heading) if heading is not None else None,
-                precision_bits=pos_data.get("precisionBits") or pos_data.get("precision_bits"),
+                position_time=position_time,
+                precision_bits=_get(pos_data, "precisionBits", "precision_bits"),
             )
             if sample.is_valid:
                 if self._store:

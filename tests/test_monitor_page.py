@@ -171,3 +171,27 @@ class TestMonitorPageFilterWiring:
         page._refresh_rankings()
         assert page._card_closest._value_lbl.text() == "—"
         assert page._card_farthest._value_lbl.text() == "—"
+
+
+class TestNearbyRankingWithLocalNodeZero:
+    def test_local_node_number_zero_still_yields_nearby_distances(self):
+        # node_num 0 is a legitimate local node number (the same zero-value
+        # class fixed throughout meshtastic_controller.py). `if
+        # self._local_node_num` treated it as "no local position", which
+        # silently left Nearby, Closest and Farthest permanently empty.
+        from meshchat.models.position_sample import PositionSample
+
+        page = MonitorPage()
+        page.set_local_node(0)
+        for node_num, lat, lon in ((0, 45.0, -122.0), (7, 45.1, -122.1)):
+            page.on_position_updated(PositionSample(
+                node_num=node_num, observed_at=datetime.now(timezone.utc),
+                latitude=lat, longitude=lon,
+            ))
+        page.on_node_updated(NodeSnapshot(node_num=7, last_heard=datetime.now(timezone.utc)))
+
+        page._active_filter = {"age_s": None, "source": "All observed", "portnum": "All"}
+        page._refresh_rankings()
+
+        assert {row._node_num for row in page._rank_nearby._rows} == {7}
+        assert page._card_closest._value_lbl.text() != "—"

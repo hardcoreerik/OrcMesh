@@ -214,5 +214,69 @@
     "decoded": {
       "portnum": 70
     }
+  },
+  "wire_text": {
+    "comment": "Real library wire shape. meshtastic builds these dicts with protobuf MessageToDict, which renders an enum field as its NAME, not its number — so decoded.portnum really arrives as \"TEXT_MESSAGE_APP\". The int-valued fixtures above are the shape hand-built callers and older library versions produce.",
+    "from": 101010,
+    "fromId": "!00018ab2",
+    "to": 4294967295,
+    "id": 55080,
+    "channel": 0,
+    "rxSnr": 7.75,
+    "rxRssi": -76,
+    "hopStart": 3,
+    "hopLimit": 3,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": "TEXT_MESSAGE_APP",
+      "text": "Hello wire shape"
+    }
+  },
+  "wire_position": {
+    "comment": "Real library wire shape: POSITION_APP with explicit groundSpeed/groundTrack of 0 (stationary node, due north) and a Position.time",
+    "from": 202020,
+    "fromId": "!00031524",
+    "to": 4294967295,
+    "id": 55081,
+    "channel": 0,
+    "rxSnr": 4.25,
+    "rxRssi": -84,
+    "hopStart": 2,
+    "hopLimit": 2,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": "POSITION_APP",
+      "position": {
+        "latitudeI": 520000000,
+        "longitudeI": 130000000,
+        "altitude": 34,
+        "groundSpeed": 0,
+        "groundTrack": 0,
+        "precisionBits": 16,
+        "time": 1780000000
+      }
+    }
+  },
+  "wire_telemetry": {
+    "comment": "Real library wire shape: TELEMETRY_APP, camelCase nested device metrics",
+    "from": 202020,
+    "fromId": "!00031524",
+    "to": 4294967295,
+    "id": 55082,
+    "channel": 0,
+    "rxSnr": 4.25,
+    "rxRssi": -84,
+    "hopStart": 2,
+    "hopLimit": 2,
+    "viaMqtt": false,
+    "decoded": {
+      "portnum": "TELEMETRY_APP",
+      "telemetry": {
+        "deviceMetrics": {
+          "batteryLevel": 87,
+          "voltage": 3.94
+        }
+      }
+    }
   }
 }

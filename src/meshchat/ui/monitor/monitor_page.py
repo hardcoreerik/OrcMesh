@@ -283,6 +283,15 @@ class MonitorPage(QWidget):
         self._map_has_nodes = False
         self._set_selected_node(None)
 
+    @property
+    def map_widget(self) -> MapWidget:
+        """The Leaflet map view — basemap source switching lives on it."""
+        return self._map_widget
+
+    def shutdown_map(self) -> None:
+        """Release the map's resources (currently: an offline tile server)."""
+        self._map_widget.shutdown()
+
     def focus_node_on_map(self, node_num: int) -> None:
         if node_num in self._positions:
             self._map_widget.focus_node(node_num)
@@ -396,7 +405,15 @@ class MonitorPage(QWidget):
         # node's last_heard (already applied above) is the only freshness
         # signal available — without this, Age had no effect here at all.
         scoped_node_nums = {n.node_num for n in nodes}
-        local_pos = self._positions.get(self._local_node_num) if self._local_node_num else None
+        # is-not-None, not a truthy check: node_num 0 is a legitimate local
+        # node number (the same zero-value class fixed throughout
+        # meshtastic_controller.py). `if self._local_node_num` treated it as
+        # "we don't know our own position", which silently left Nearby,
+        # Closest and Farthest permanently empty for such a radio.
+        local_pos = (
+            self._positions.get(self._local_node_num)
+            if self._local_node_num is not None else None
+        )
         if local_pos:
             lat0, lon0 = local_pos
             distances = [

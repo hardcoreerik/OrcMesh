@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import unittest.mock as mock
 from pathlib import Path
 
 
@@ -327,6 +328,131 @@ class TestSignals:
         ing.ingest_raw(_FIXTURES["direct_text"])
         assert len(received) == 1
         assert isinstance(received[0], NetworkPacket)
+
+
+# ── Real wire shape (what the meshtastic library actually publishes) ──────────
+
+class TestRealisticWireShape:
+    """meshtastic builds its packet dicts with protobuf's MessageToDict, so
+    ``decoded.portnum`` arrives as an enum *name* ("POSITION_APP"), while
+    every comparison in the ingestor is against the int constants in
+    ``analytics.packet_classifier``. Nothing used to normalize that, so no
+    packet ever matched ``PORTNUM_POSITION``/``PORTNUM_TELEMETRY``: position
+    packets were never processed (no live map updates, no ``positions``
+    rows), telemetry was dropped the same way, and every packet was labelled
+    "Other Known (…)". The ``wire_*`` fixtures carry the real shape, and
+    FakeMeshtasticInterface now emits it too — an int-only fake is what let
+    this go unnoticed in the first place.
+    """
+
+    def test_enum_name_text_portnum_is_normalized_to_its_int(self):
+        ing = _make_ingestor()
+        ing.ingest_raw(_FIXTURES["wire_text"])
+        pkt = ing.get_recent_packets()[0]
+        assert pkt.portnum == 1
+        assert pkt.portnum_name == "Text"
+        assert ing.get_node(101010).text_count == 1
+
+    def test_enum_name_position_packet_reaches_the_map(self):
+        ing = _make_ingestor()
+        positions = []
+        ing.position_updated.connect(positions.append)
+        ing.ingest_raw(_FIXTURES["wire_position"])
+
+        assert len(positions) == 1, "live position packet was not processed"
+        sample = positions[0]
+        assert sample.node_num == 202020
+        assert sample.latitude == 52.0
+        assert sample.longitude == 13.0
+        assert ing.get_node(202020).position_count == 1
+
+    def test_zero_ground_speed_and_track_are_preserved(self):
+        # An explicitly-reported 0 is a real reading (stationary node, due
+        # north) — `a or b` discarded it in favour of the absent snake_case
+        # key's None.
+        ing = _make_ingestor()
+        positions = []
+        ing.position_updated.connect(positions.append)
+        ing.ingest_raw(_FIXTURES["wire_position"])
+        sample = positions[0]
+        assert sample.speed_ms == 0.0
+        assert sample.heading_deg == 0.0
+
+    def test_position_time_is_taken_from_the_payload(self):
+        ing = _make_ingestor()
+        positions = []
+        ing.position_updated.connect(positions.append)
+        ing.ingest_raw(_FIXTURES["wire_position"])
+        sample = positions[0]
+        assert sample.position_time is not None, "positions.position_time was always NULL before"
+        assert int(sample.position_time.timestamp()) == 1780000000
+        assert sample.precision_bits == 16
+
+    def test_zero_precision_bits_is_carried_through_not_dropped(self):
+        ing = _make_ingestor()
+        positions = []
+        ing.position_updated.connect(positions.append)
+        pkt = dict(_FIXTURES["wire_position"])
+        pkt["decoded"] = {
+            **pkt["decoded"],
+            "position": {**pkt["decoded"]["position"], "precisionBits": 0},
+        }
+        ing.ingest_raw(pkt)
+        assert positions[0].precision_bits == 0
+
+    def test_enum_name_telemetry_packet_is_processed(self):
+        ing = _make_ingestor()
+        samples = []
+        ing.telemetry_updated.connect(samples.append)
+        ing.ingest_raw(_FIXTURES["wire_telemetry"])
+
+        assert len(samples) == 1, "live telemetry packet was not processed"
+        assert samples[0].battery_level == 87.0
+        node = ing.get_node(202020)
+        assert node.telemetry_count == 1
+        # Merged onto the snapshot for the Node Inspector, which reads the
+        # node rather than the transient signal.
+        assert node.battery_level == 87.0
+
+    def test_unknown_enum_name_is_reported_as_unknown_port(self):
+        ing = _make_ingestor()
+        ing.ingest_raw({
+            "from": 1, "id": 55090,
+            "decoded": {"portnum": "SOME_FUTURE_APP"},
+        })
+        pkt = ing.get_recent_packets()[0]
+        assert pkt.portnum is None
+        assert pkt.portnum_name == "Unknown Port"
+
+    def test_numeric_string_portnum_is_accepted(self):
+        # Not a shape the library emits, but a JSON round-trip of a packet
+        # can produce it, and it must not be classified as unknown.
+        ing = _make_ingestor()
+        ing.ingest_raw({"from": 1, "id": 55091, "decoded": {"portnum": "3"}})
+        assert ing.get_recent_packets()[0].portnum == 3
+
+    def test_name_and_number_shapes_dedupe_to_the_same_key(self):
+        ing = _make_ingestor()
+        ing.ingest_raw({"from": 5, "id": 55092, "decoded": {"portnum": "POSITION_APP"}})
+        ing.ingest_raw({"from": 5, "id": 55092, "decoded": {"portnum": 3}})
+        assert ing._session.packet_count == 1
+
+    def test_fake_interface_packet_shape_is_understood(self):
+        """Guards the fake as well as the ingestor: if the fake drifts back
+        to bare int portnums, it stops exercising the normalization path
+        every real radio goes through."""
+        from tests.fakes.fake_meshtastic_interface import FakeMeshtasticInterface
+
+        fake = FakeMeshtasticInterface()
+        fake.close()  # cancels the fake's scheduled connection.established event
+        with mock.patch("tests.fakes.fake_meshtastic_interface._pub.sendMessage") as send:
+            fake.pump_text("from the fake")
+        raw = send.call_args_list[-1].kwargs["packet"]
+        assert isinstance(raw["decoded"]["portnum"], str), "fake no longer matches the wire shape"
+
+        ing = _make_ingestor()
+        ing.ingest_raw(raw)
+        assert ing.get_recent_packets()[0].portnum == 1
 
     def test_node_updated_signal_emitted(self):
         ing = _make_ingestor()

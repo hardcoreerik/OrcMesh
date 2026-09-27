@@ -116,7 +116,16 @@ class FakeMeshtasticInterface:
         via_mqtt: bool = False,
         packet_id: int | None = None,
     ) -> dict:
-        """Simulate an inbound text packet via PyPubSub. Returns the raw packet dict."""
+        """Simulate an inbound text packet via PyPubSub. Returns the raw packet dict.
+
+        `portnum` is the enum *name*, not its number: that is what the real
+        library publishes (it builds these dicts with protobuf's
+        MessageToDict). The fake used to emit bare ints, which hid a real
+        defect for months — every portnum comparison in the ingestor is
+        against int constants, so with the name being what actually arrives,
+        position and telemetry packets were silently never processed. Keep
+        this faithful to the wire shape.
+        """
         pid = packet_id if packet_id is not None else int(time.time() * 1000) & 0xFFFF_FFFF
         raw = {
             "from": sender_num,
@@ -130,7 +139,7 @@ class FakeMeshtasticInterface:
             "hopLimit": hop_limit,
             "viaMqtt": via_mqtt,
             "decoded": {
-                "portnum": 1,
+                "portnum": "TEXT_MESSAGE_APP",
                 "text": text,
             },
         }
@@ -158,7 +167,7 @@ class FakeMeshtasticInterface:
             "hopStart": 3,
             "hopLimit": 2,
             "decoded": {
-                "portnum": 4,
+                "portnum": "NODEINFO_APP",
                 "user": {
                     "id": f"!{sender_num:08x}",
                     "longName": long_name,
@@ -179,7 +188,7 @@ class FakeMeshtasticInterface:
             "from": 0xFFFF_FFFF,
             "id": last["id"] + 1,
             "decoded": {
-                "portnum": 5,
+                "portnum": "ROUTING_APP",
                 "routing": {"errorReason": "NONE"},
                 "requestId": last["id"],
             },

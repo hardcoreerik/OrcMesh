@@ -52,6 +52,30 @@ def _message(text: str, local_id: str) -> ChatMessage:
     )
 
 
+class TestSaturatedWriteQueue:
+    """A full queue must be reported as a full queue.
+
+    backup() waits on an event the writer thread sets only after it dequeues
+    the request, so a request dropped by a full queue left it blocking for
+    the whole timeout and then blaming the writer thread ("may be
+    unresponsive") for something the queue was responsible for."""
+
+    def test_backup_fails_fast_when_the_request_cannot_be_queued(self, store):
+        with mock.patch.object(store._write_q, "put_nowait", side_effect=queue.Full):
+            started = time.monotonic()
+            with pytest.raises(RuntimeError) as excinfo:
+                store.backup()
+            elapsed = time.monotonic() - started
+
+        assert "queue is full" in str(excinfo.value)
+        assert elapsed < 1.0, "must not wait out the backup timeout on a dropped request"
+
+    def test_enqueue_reports_the_drop_to_its_caller(self, store):
+        with mock.patch.object(store._write_q, "put_nowait", side_effect=queue.Full):
+            assert store._enqueue(("setting", ("k", "v"))) is False
+        assert store.health().dropped_count == 1
+
+
 class TestPerItemIsolation:
     def test_one_permanently_failing_item_does_not_drop_the_rest_of_the_batch(self, store):
         with mock.patch.object(store, "_write_node", side_effect=ValueError("boom")):
