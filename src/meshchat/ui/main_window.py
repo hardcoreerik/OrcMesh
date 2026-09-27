@@ -490,7 +490,7 @@ class MainWindow(QMainWindow):
 
         pack = packs[index - 1]
         try:
-            map_widget.show_offline_pack(tools, pack)
+            map_widget.show_offline_pack(tools, pack, packs)
         except orcmaps.OrcMapsError as exc:
             log.exception("Offline basemap failed for pack %s", pack.stem)
             QMessageBox.warning(

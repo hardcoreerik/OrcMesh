@@ -51,7 +51,8 @@ Two consequences that are design constraints, not preferences:
 | Output format | binary P6 PPM |
 | Measured latency | **45 ms cold / 27 ms warm** for 256×256 (80 MB `oregon.pmtiles`) |
 | Builtin style ids | `orcsdr-dark`, `standard-light`, `high-contrast-field`, `night-red-safe` |
-| Packs on hand | `oregon.pmtiles` (z1–13, 80 MB), `world-overview-z4..z8`, `springfield-97477`, `pin-25km/50km/100km`, `wizard-demo` |
+| Packs on hand | `oregon.pmtiles` (z1–13, 80 MB), `springfield-97477`, `pin-25km/50km/100km`, `wizard-demo` |
+| World overview | `world-overview.pmtiles` (z0–8, 16.4 MB) built from Natural Earth 5.1.2 — `class: clean`, priority 0, **no required attribution** (public domain, link recorded) |
 | Pin cutter | `tools/pack-builder/provision_pack.py` (host-only Python) |
 | pmtiles CLI | `data/local/tools/go-pmtiles/<version>/pmtiles.exe` (pinned copy in the checkout) |
 | Measured build | **0.6 s** to cut a real 3 km pin pack, then verified by `orcmap_pack_verify` |
@@ -98,9 +99,38 @@ flowchart LR
   QtWebEngine custom schemes must be registered before `QApplication` exists,
   and the page already fetches remote URLs.
 - Tiles are rendered to PNG in Python from the CLI's PPM output, then cached.
-- Pack selection: highest `priority` first, then the first pack whose zoom
-  range and bounds contain the request; 404 outside all packs so Leaflet shows
-  no broken tiles.
+- **Pack selection mirrors OrcMaps' `ResolvePack()`, and the distinction is
+  load-bearing.** A pack that *fully contains* the tile wins outright, highest
+  `priority` first. A pack whose bounds merely *overlap* the tile is only used
+  when nothing contains it. 404 outside all packs, so Leaflet shows no broken
+  tiles.
+
+  Why it has to be containment, not overlap: a city pack's bounds overlap a z2
+  tile but cannot contain it. Under a plain overlap rule the city pack won on
+  `priority` and painted a near-empty tile over every low-zoom view — measured
+  on this machine, the world overview's z2 tile rendered 2121 bytes of real
+  geography where the city pack rendered 1700 bytes of almost nothing. OrcMaps
+  avoids this by requiring a pack to cover the requested area completely, so
+  OrcMesh matches it. The overlap fallback exists so an install holding only a
+  regional pack keeps rendering its edges instead of showing a blank map.
+- **An empty render falls through to the next pack.** Bounds are rectangles, so
+  a pack can *claim* tiles its archive has no data for. Measured with the US
+  pack installed: central Canada sits inside its box, and the US pack served a
+  completely flat tile (0.0% of pixels inked) where the world overview has 20%.
+  So the tile server tries candidates in resolver order and keeps the first one
+  that produces a non-flat frame, caching the "nothing here" decision for the
+  ones it rejected — the retry is paid once per tile, never again. This is an
+  OrcMesh-side mitigation for a limitation OrcMaps documents as future work
+  (its `ResolvePack()` has the same rectangular-coverage gap).
+- **The whole installed pack set is served, not just the chosen pack.** OrcMaps
+  resolves a pack *per view*, not per install, so a world overview can only
+  cover the low zooms if it is in the set being served. Selecting a pack in
+  `Map → Basemap Source` therefore makes it the *preferred* pack (first on ties)
+  rather than the only one, the zoom clamp sent to Leaflet is the union across
+  the set (else the map cannot be zoomed out to the overview), and the credit
+  line is the union of the served packs' `required_attribution` — a tile may
+  come from any of them, and crediting only the chosen one would drop a licence
+  obligation.
 - The app's existing light/dark map toggle maps to OrcMaps style ids:
   dark → `orcsdr-dark`, light → `standard-light`.
 

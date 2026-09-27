@@ -122,6 +122,7 @@ class MapWidget(QWidget):
         # pack"; the *choice* of pack lives with the menu that offers it.
         self._tile_server = None
         self._offline_pack: OrcMapsPack | None = None
+        self._offline_packs: list[OrcMapsPack] = []
         self._tile_revision = 0
 
         if _map_available():
@@ -228,11 +229,24 @@ class MapWidget(QWidget):
         """Go back to the built-in online basemap (CARTO/OSM)."""
         self._stop_tile_server()
         self._offline_pack = None
+        self._offline_packs = []
         if self._bridge:
             self._bridge.set_basemap({"kind": "online"})
 
-    def show_offline_pack(self, tools: OrcMapsTools, pack: OrcMapsPack) -> None:
-        """Serve the basemap from a local OrcMaps pack.
+    def show_offline_pack(
+        self,
+        tools: OrcMapsTools,
+        pack: OrcMapsPack,
+        packs: list[OrcMapsPack] | None = None,
+    ) -> None:
+        """Serve the basemap from the local OrcMaps packs.
+
+        ``pack`` is the source the user chose and is tried first when more than
+        one pack can serve a tile. ``packs`` is everything installed, and it
+        matters: OrcMaps resolves a pack *per view*, not per install, so a
+        world overview has to be in the set for the zoom levels a regional or
+        city pack cannot cover completely. Serving only the chosen pack is what
+        made zooming out show near-empty tiles.
 
         Raises OrcMapsError if the tile server can't start, so the caller can
         report it and fall back to the online basemap instead of leaving the
@@ -241,16 +255,26 @@ class MapWidget(QWidget):
         from meshchat.services.orcmaps import TileServer
 
         self._stop_tile_server()
-        server = TileServer(tools, [pack], style=self._style_for_theme())
+        served = [pack]
+        for other in packs or []:
+            if other.stem != pack.stem:
+                served.append(other)
+        server = TileServer(tools, served, style=self._style_for_theme())
         server.start()
         self._tile_server = server
         self._offline_pack = pack
+        self._offline_packs = served
         self._push_offline_basemap()
 
     @property
     def offline_pack(self) -> OrcMapsPack | None:
-        """The pack currently being served, or None when online."""
+        """The pack the user chose, or None when online."""
         return self._offline_pack
+
+    @property
+    def offline_packs(self) -> list[OrcMapsPack]:
+        """Every pack the tile server will draw from (empty when online)."""
+        return list(self._offline_packs)
 
     def _style_for_theme(self) -> str:
         from meshchat.services.orcmaps import STYLE_DARK, STYLE_LIGHT
@@ -267,20 +291,25 @@ class MapWidget(QWidget):
         server, pack = self._tile_server, self._offline_pack
         if server is None or pack is None or self._bridge is None:
             return
-        from meshchat.services.orcmaps import attribution_html
+        from meshchat.services.orcmaps import attribution_html_for
 
+        served = self._offline_packs or [pack]
         self._tile_revision += 1
         self._bridge.set_basemap({
             "kind": "offline",
             "url": f"{server.url_template}?v={self._tile_revision}",
-            "attribution": attribution_html(pack),
-            "min_zoom": pack.min_zoom,
-            "max_zoom": pack.max_zoom,
+            # Every served pack may render a tile, so every required credit is
+            # shown; the zoom range is the union, else the map clamps to the
+            # chosen pack and the world overview can never be reached.
+            "attribution": attribution_html_for(served),
+            "min_zoom": min(p.min_zoom for p in served),
+            "max_zoom": max(p.max_zoom for p in served),
             "label": pack.display_name,
         })
         log.info(
-            "Map: offline basemap from pack '%s' (%s, %s) via %s",
-            pack.display_name, pack.pack_class, pack.zoom_label, server.base_url,
+            "Map: offline basemap from pack '%s' (%s, %s) via %s, %d pack(s) served",
+            pack.display_name, pack.pack_class, pack.zoom_label,
+            server.base_url, len(served),
         )
 
     def _stop_tile_server(self) -> None:

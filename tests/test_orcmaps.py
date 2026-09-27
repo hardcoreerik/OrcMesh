@@ -21,6 +21,7 @@ from PySide6.QtCore import QCoreApplication
 
 _app = QCoreApplication.instance() or QCoreApplication(sys.argv[:1])
 
+from meshchat.services import orcmaps
 from meshchat.services.orcmaps import (
     STYLE_DARK,
     OrcMapsError,
@@ -28,9 +29,11 @@ from meshchat.services.orcmaps import (
     TileServer,
     _ppm_to_png,
     attribution_html,
+    attribution_html_for,
     default_pack_directories,
     discover_packs,
     find_tools,
+    is_empty_render,
     load_pack,
     render_tile,
     tile_bounds_deg,
@@ -72,6 +75,11 @@ def _manifest(tmp_path: Path, name: str = "test", **overrides) -> Path:
 
 
 # ── Tile math ────────────────────────────────────────────────────────────────
+
+def _tools(tmp_path: Path) -> OrcMapsTools:
+    """Tools used only to construct a server; no tile is rendered here."""
+    return _TOOLS or OrcMapsTools(home=tmp_path, inspect=tmp_path / "missing.exe")
+
 
 class TestTileMath:
     def test_root_tile_centre_is_the_origin(self):
@@ -185,12 +193,234 @@ class TestCoverage:
         assert pack.covers(10, *tile_index_deg(48.85, 2.35, 10)) is True
 
 
+class TestPackSelection:
+    """Which pack draws a tile when several claim it.
+
+    OrcMaps resolves a pack only among those that *fully contain* the request,
+    and this matters most at low zoom: a city pack's bounds overlap a z2 tile
+    without containing it, and letting it win there painted a near-empty tile
+    over the world overview that actually had the data.
+    """
+
+    @staticmethod
+    def _world_and_city(tmp_path):
+        _manifest(
+            tmp_path, "world", pack_id="world-pack",
+            bounds={"min_lon": -180.0, "min_lat": -85.05, "max_lon": 180.0, "max_lat": 85.05},
+            min_zoom=0, max_zoom=8, priority=0, display_name="World",
+        )
+        _manifest(
+            tmp_path, "city", pack_id="city-pack",
+            bounds={"min_lon": -123.2, "min_lat": 43.9, "max_lon": -122.8, "max_lat": 44.2},
+            min_zoom=1, max_zoom=13, priority=20, display_name="City",
+        )
+        return {pack.stem: pack for pack in discover_packs([tmp_path])}
+
+    def test_a_tile_the_bounds_overlap_is_not_contained(self, tmp_path):
+        packs = self._world_and_city(tmp_path)
+        city = packs["city"]
+        x, y = tile_index_deg(44.0, -123.0, 2)
+
+        assert city.covers(2, x, y) is True, "the city pack can render something"
+        assert city.contains(2, x, y) is False, "but it cannot cover the whole tile"
+
+    def test_the_world_pack_contains_a_global_tile(self, tmp_path):
+        packs = self._world_and_city(tmp_path)
+        x, y = tile_index_deg(44.0, -123.0, 2)
+
+        assert packs["world"].contains(2, x, y) is True
+
+    def test_a_containing_pack_beats_a_higher_priority_overlap(self, tmp_path):
+        """The bug: a priority-20 city pack starved every low-zoom tile."""
+        self._world_and_city(tmp_path)
+        server = TileServer(_tools(tmp_path), discover_packs([tmp_path]))
+        x, y = tile_index_deg(44.0, -123.0, 2)
+
+        assert server.pack_for(2, x, y).display_name == "World"
+
+    def test_a_local_pack_still_wins_where_it_has_depth(self, tmp_path):
+        self._world_and_city(tmp_path)
+        server = TileServer(_tools(tmp_path), discover_packs([tmp_path]))
+        x, y = tile_index_deg(44.0, -123.0, 12)
+
+        # The world pack stops at z8; the city's deeper data must win.
+        assert server.pack_for(12, x, y).display_name == "City"
+
+    def test_an_overlapping_pack_still_serves_when_nothing_contains(self, tmp_path):
+        """Lone regional installs must keep rendering, not go blank."""
+        _manifest(
+            tmp_path, "city", pack_id="city-pack",
+            bounds={"min_lon": -123.2, "min_lat": 43.9, "max_lon": -122.8, "max_lat": 44.2},
+            min_zoom=1, max_zoom=13, priority=20, display_name="City",
+        )
+        server = TileServer(_tools(tmp_path), discover_packs([tmp_path]))
+        x, y = tile_index_deg(44.0, -123.0, 2)
+
+        assert server.pack_for(2, x, y).display_name == "City"
+
+    def test_a_set_surfaces_every_packs_required_credits(self, tmp_path):
+        """Crediting only the chosen pack would drop a licence obligation for
+        the tiles another pack in the set actually drew."""
+        _manifest(
+            tmp_path, "world", pack_id="world-pack", display_name="World",
+            required_attribution=[],
+            attribution_links=["https://www.naturalearthdata.com/"],
+        )
+        _manifest(tmp_path, "city", pack_id="city-pack", display_name="City")
+
+        html = attribution_html_for(discover_packs([tmp_path]))
+
+        assert "OpenStreetMap" in html
+        assert "naturalearthdata.com" in html
+
+    def test_repeated_credits_are_listed_once(self, tmp_path):
+        """Regional packs cut from one source repeat the same credits."""
+        _manifest(tmp_path, "a", pack_id="a-pack", display_name="A")
+        _manifest(tmp_path, "b", pack_id="b-pack", display_name="B")
+
+        html = attribution_html_for(discover_packs([tmp_path]))
+
+        assert html.count("OpenStreetMap contributors") == 1, "text credit repeated"
+        assert html.count("<a href=") == 1, "link credit repeated"
+
+
+class TestEmptyRenderFallback:
+    """A pack must not blank a tile its bounds claimed but its data lacks.
+
+    Packs declare rectangular bounds, so a continental pack can "contain" tiles
+    thousands of kilometres outside its country. Measured on this machine: the
+    US pack claimed central Canada and rendered a completely flat tile where the
+    world overview had 20% of its pixels inked.
+    """
+
+    @staticmethod
+    def _ppm(colour: tuple[int, int, int] = (10, 20, 30), size: int = 4) -> bytes:
+        header = f"P6\n{size} {size}\n255\n".encode("ascii")
+        return header + bytes(colour) * (size * size)
+
+    @staticmethod
+    def _painted_ppm(size: int = 4) -> bytes:
+        header = f"P6\n{size} {size}\n255\n".encode("ascii")
+        pixels = bytearray()
+        for index in range(size * size):
+            pixels += bytes((index * 7 % 256, 40, 90))
+        return header + bytes(pixels)
+
+    def test_a_flat_render_is_recognised_as_empty(self):
+        assert is_empty_render(self._ppm()) is True
+
+    def test_a_flat_render_of_any_colour_is_empty(self):
+        assert is_empty_render(self._ppm((255, 255, 255))) is True
+
+    def test_a_render_with_any_variation_is_not_empty(self):
+        assert is_empty_render(self._painted_ppm()) is False
+
+    def test_a_single_pixel_difference_still_counts_as_content(self):
+        body = bytearray(self._ppm())
+        body[-1] = 99
+
+        assert is_empty_render(bytes(body)) is False
+
+    def test_unparseable_output_is_not_treated_as_empty(self):
+        """A malformed render must not silently cause a fallback."""
+        assert is_empty_render(b"not a ppm at all") is False
+
+    @staticmethod
+    def _server(tmp_path):
+        """Two packs that both cover the same tile, the over-claimer first.
+
+        Same bounds and zoom range on purpose: the test is about which one
+        actually has data, not about which one qualifies.
+        """
+        _manifest(
+            tmp_path, "claimer", pack_id="claimer-pack",
+            display_name="Claims more than it has", priority=20,
+        )
+        _manifest(
+            tmp_path, "data", pack_id="data-pack",
+            display_name="Has the data", priority=10,
+        )
+        packs = discover_packs([tmp_path])
+        return TileServer(_tools(tmp_path), packs), {p.stem: p for p in packs}
+
+    def test_the_empty_pack_falls_through_to_the_next_candidate(self, tmp_path, monkeypatch):
+        server, _packs = self._server(tmp_path)
+        rendered: list[str] = []
+
+        def fake_render(_tools, pack, _z, _x, _y, **_kwargs):
+            rendered.append(pack.stem)
+            return self._ppm() if pack.stem == "claimer" else self._painted_ppm()
+
+        monkeypatch.setattr(orcmaps, "_render_ppm", fake_render)
+        x, y = tile_index_deg(44.0, -123.0, 10)
+
+        png = server.render(10, x, y)
+
+        assert rendered == ["claimer", "data"], "the empty candidate must be skipped"
+        assert png.startswith(b"\x89PNG")
+
+    def test_a_pack_with_content_is_never_second_guessed(self, tmp_path, monkeypatch):
+        server, _packs = self._server(tmp_path)
+        rendered: list[str] = []
+
+        def fake_render(_tools, pack, _z, _x, _y, **_kwargs):
+            rendered.append(pack.stem)
+            return self._painted_ppm()
+
+        monkeypatch.setattr(orcmaps, "_render_ppm", fake_render)
+        x, y = tile_index_deg(44.0, -123.0, 10)
+
+        server.render(10, x, y)
+
+        assert rendered == ["claimer"], "one render is enough when the first has data"
+
+    def test_the_only_candidate_is_returned_even_when_flat(self, tmp_path, monkeypatch):
+        """Better a flat tile than no tile at all."""
+        _manifest(tmp_path, "p", display_name="Lonely")
+        pack = discover_packs([tmp_path])[0]
+        server = TileServer(_tools(tmp_path), [pack])
+        monkeypatch.setattr(
+            orcmaps, "_render_ppm",
+            lambda *_a, **_k: self._ppm(),
+        )
+
+        png = server.render(10, *tile_index_deg(44.0, -123.0, 10))
+
+        assert png.startswith(b"\x89PNG")
+
+    def test_a_fallback_result_is_cached_under_the_pack_that_drew_it(self, tmp_path, monkeypatch):
+        server, _packs = self._server(tmp_path)
+        calls: list[str] = []
+
+        def fake_render(_tools, pack, _z, _x, _y, **_kwargs):
+            calls.append(pack.stem)
+            return self._ppm() if pack.stem == "claimer" else self._painted_ppm()
+
+        monkeypatch.setattr(orcmaps, "_render_ppm", fake_render)
+        x, y = tile_index_deg(44.0, -123.0, 10)
+
+        server.render(10, x, y)
+        server.render(10, x, y)
+
+        assert calls == ["claimer", "data"], "the second request should be a cache hit"
+
+    def test_packs_for_lists_containing_packs_before_overlapping_ones(self, tmp_path):
+        packs = TestPackSelection._world_and_city(tmp_path)
+        server = TileServer(_tools(tmp_path), list(packs.values()))
+        x, y = tile_index_deg(44.0, -123.0, 2)
+
+        candidates = server.packs_for(2, x, y)
+
+        assert candidates == [packs["world"], packs["city"]], (
+            "the world overview contains the tile; the city only overlaps it"
+        )
+
+
 # ── Attribution (manifest → Leaflet control) ─────────────────────────────────
 
 class TestAttributionHtml:
     """A pack's required attribution must be shown wherever its tiles are, so
     the manifest contract survives the trip into the web view."""
-
     def test_text_and_http_links_are_rendered(self, tmp_path):
         _manifest(tmp_path, "p")
         pack = load_pack(tmp_path / "p.manifest.json")

@@ -32,6 +32,8 @@ import tempfile
 import threading
 import time
 import zlib
+
+from collections.abc import Sequence
 from html import escape
 from urllib.parse import urlsplit
 from collections import OrderedDict
@@ -47,6 +49,11 @@ _MAX_MANIFEST_BYTES = 64 * 1024
 #: A 256x256 tile measured 45 ms cold / 27 ms warm against an 80 MB pack on
 #: the dev machine, so this only needs to catch a hung child process.
 _RENDER_TIMEOUT_S = 60.0
+
+#: Cached in place of a tile when a pack rendered a flat, empty frame. Caching
+#: the decision — not just the image — is what stops a fall-through from being
+#: paid again on every later request for that tile.
+_NO_DATA = b""
 
 #: OrcMaps builtin style ids (OrcMaps src/render/style.cpp), mapped from
 #: OrcMesh's existing light/dark map toggle.
@@ -105,7 +112,7 @@ class OrcMapsPack:
         return f"z{self.min_zoom}-{self.max_zoom}"
 
     def covers(self, z: int, x: int, y: int) -> bool:
-        """True when this pack can render the given tile.
+        """True when this pack can render the given tile *at all*.
 
         Zoom range and bounds come from the manifest; the archive's own header
         is verified separately by ``orcmap_pack_verify``. Antimeridian-spanning
@@ -119,6 +126,25 @@ class OrcMapsPack:
         min_lon, min_lat, max_lon, max_lat = self.bounds
         return not (east < min_lon or west > max_lon or north < min_lat or south > max_lat)
 
+    def contains(self, z: int, x: int, y: int) -> bool:
+        """True when this pack's bounds *fully* contain the tile.
+
+        This mirrors OrcMaps' ``ResolvePack()``, which requires a pack to cover
+        the requested area completely before it qualifies. The distinction is
+        load-bearing at low zoom: a city pack's bounds overlap a z2 tile but
+        cannot contain it, and letting it win there serves a nearly empty tile
+        in place of a world overview that holds the real data. A manifest with
+        no bounds cannot claim containment, so it only ever serves through the
+        overlap fallback in ``TileServer.pack_for``.
+        """
+        if not (self.min_zoom <= z <= self.max_zoom):
+            return False
+        if self.bounds is None:
+            return False
+        west, south, east, north = tile_bounds_deg(z, x, y)
+        min_lon, min_lat, max_lon, max_lat = self.bounds
+        return west >= min_lon and east <= max_lon and south >= min_lat and north <= max_lat
+
 
 def attribution_html(pack: OrcMapsPack) -> str:
     """Leaflet-ready attribution HTML for a pack's required attributions.
@@ -130,12 +156,38 @@ def attribution_html(pack: OrcMapsPack) -> str:
     http(s) links become clickable — anything else is shown as plain text
     rather than handed to the web view as a link.
     """
-    texts = [escape(text) for text in pack.attribution]
+    return _render_attribution(pack.attribution, pack.attribution_links)
+
+
+def attribution_html_for(packs: list[OrcMapsPack]) -> str:
+    """Attribution HTML for a *set* of packs served together.
+
+    When several packs share the map, any of them may render a given tile, so
+    every required attribution in the set has to be surfaced — crediting only
+    the pack the user picked would drop a license obligation for tiles that
+    came from another one. Order is preserved and duplicates collapse, because
+    regional packs cut from the same source repeat the same credits.
+    """
+    texts: list[str] = []
     links: list[str] = []
-    for url in pack.attribution_links:
+    for pack in packs:
+        for text in pack.attribution:
+            if text not in texts:
+                texts.append(text)
+        for url in pack.attribution_links:
+            if url not in links:
+                links.append(url)
+    return _render_attribution(texts, links)
+
+
+def _render_attribution(texts: Sequence[str], urls: Sequence[str]) -> str:
+    """Escape and join attribution strings, making only http(s) links clickable."""
+    escaped = [escape(text) for text in texts]
+    links: list[str] = []
+    for url in urls:
         split = urlsplit(url)
         if split.scheme not in ("http", "https") or not split.netloc:
-            texts.append(escape(url))
+            escaped.append(escape(url))
             continue
         links.append(
             '<a href="{href}" target="_blank" rel="noopener">{label}</a>'.format(
@@ -143,7 +195,7 @@ def attribution_html(pack: OrcMapsPack) -> str:
                 label=escape(split.netloc),
             )
         )
-    text = " · ".join(texts)
+    text = " · ".join(escaped)
     if not links:
         return text
     joined = ", ".join(links)
@@ -512,11 +564,32 @@ def render_tile(
     """Render one tile to PNG bytes through the OrcMaps host CLI.
 
     ``orcmap_pack_inspect preview`` takes a centre lat/lon — not a tile index —
-    so the tile's centre is computed here and the CLI renders a frame of
-    ``size``x``size`` around it, which is the tile.
+    so the tile's centre is computed in :func:`_render_ppm` and the CLI renders
+    a frame of ``size``x``size`` around it, which is the tile.
     """
     if not pack.covers(z, x, y):
         raise OrcMapsError(f"{pack.display_name} does not cover z{z}/{x}/{y}")
+    ppm = _render_ppm(tools, pack, z, x, y, size=size, style=style, timeout=timeout)
+    return _ppm_to_png(ppm)
+
+
+def _render_ppm(
+    tools: OrcMapsTools,
+    pack: OrcMapsPack,
+    z: int,
+    x: int,
+    y: int,
+    *,
+    size: int = 256,
+    style: str | None = None,
+    timeout: float = _RENDER_TIMEOUT_S,
+) -> bytes:
+    """The CLI's raw P6 PPM output for one tile, before PNG encoding.
+
+    Kept separate from :func:`render_tile` so the tile server can tell an empty
+    render from a real one and try another pack without paying for a PNG
+    encode it is about to throw away.
+    """
     lat, lon = tile_center_deg(z, x, y)
 
     with tempfile.TemporaryDirectory(prefix="orcmesh-tile-") as tmp:
@@ -538,7 +611,27 @@ def render_tile(
         "Rendered %s z%d/%d/%d in %.0f ms", pack.stem, z, x, y,
         (time.monotonic() - started) * 1000,
     )
-    return _ppm_to_png(ppm)
+    return ppm
+
+
+def is_empty_render(ppm: bytes) -> bool:
+    """True when every pixel of a rendered tile is the same colour.
+
+    An OrcMaps render of a tile the pack has no data for comes back as a flat
+    background. That is how a pack reveals it does not really cover a tile its
+    rectangular bounds claimed — measured on this machine, central Canada sits
+    inside the US pack's box and rendered a completely flat tile where the
+    world overview had 20% of its area inked.
+    """
+    try:
+        width, height, data = _parse_ppm_p6(ppm)
+    except OrcMapsError:
+        return False
+    pixels = width * height
+    if pixels == 0 or len(data) < 3:
+        return False
+    first = data[:3]
+    return data[: pixels * 3] == first * pixels
 
 
 # ---------------------------------------------------------------------------
@@ -897,26 +990,65 @@ class TileServer:
     # -- serving -----------------------------------------------------------
 
     def pack_for(self, z: int, x: int, y: int) -> OrcMapsPack | None:
-        """First pack (already priority-ordered) that covers this tile."""
+        """The pack to render this tile from, or None when none can serve it.
+
+        Two passes, mirroring how OrcMaps resolves a pack for a view. A pack
+        that *fully contains* the tile wins outright, highest priority first —
+        so a world overview serves the low zooms that a regional or city pack
+        cannot cover completely, and local packs keep winning where they hold
+        deeper data. Only if nothing contains the tile does a merely
+        overlapping pack get to serve it, which keeps a single-regional-pack
+        install rendering instead of showing nothing.
+        """
+        for pack in self.packs:
+            if pack.contains(z, x, y):
+                return pack
         for pack in self.packs:
             if pack.covers(z, x, y):
                 return pack
         return None
 
+    def packs_for(self, z: int, x: int, y: int) -> list[OrcMapsPack]:
+        """Every pack that could serve this tile, best candidate first."""
+        containing = [p for p in self.packs if p.contains(z, x, y)]
+        overlapping = [
+            p for p in self.packs if p not in containing and p.covers(z, x, y)
+        ]
+        return containing + overlapping
+
     def render(self, z: int, x: int, y: int) -> bytes:
-        """Cached tile bytes, rendering on a miss."""
-        pack = self.pack_for(z, x, y)
-        if pack is None:
+        """Cached tile bytes, rendering on a miss.
+
+        Candidates are tried in resolver order and the first one that produces
+        a non-empty tile wins. The extra attempt only happens where a pack's
+        rectangular bounds claimed a tile its archive has no data for, so it
+        costs one render on those tiles and nothing anywhere else.
+        """
+        candidates = self.packs_for(z, x, y)
+        if not candidates:
             raise OrcMapsError(f"No pack covers z{z}/{x}/{y}")
-        key = (pack.stem, z, x, y, self.size, self.style)
-        cached = self.cache.get(key)
-        if cached is not None:
-            return cached
-        png = render_tile(
-            self.tools, pack, z, x, y, size=self.size, style=self.style,
-        )
-        self.cache.put(key, png)
-        return png
+
+        for index, pack in enumerate(candidates):
+            key = (pack.stem, z, x, y, self.size, self.style)
+            cached = self.cache.get(key)
+            if cached is not None:
+                if cached is _NO_DATA:
+                    continue  # already known to have nothing here; free to skip
+                return cached
+            ppm = _render_ppm(
+                self.tools, pack, z, x, y, size=self.size, style=self.style,
+            )
+            last = index == len(candidates) - 1
+            if last or not is_empty_render(ppm):
+                png = _ppm_to_png(ppm)
+                self.cache.put(key, png)
+                return png
+            self.cache.put(key, _NO_DATA)
+            log.info(
+                "Map: %s has no data for z%d/%d/%d; trying the next pack",
+                pack.stem, z, x, y,
+            )
+        raise OrcMapsError(f"No pack rendered z{z}/{x}/{y}")
 
     def status(self) -> dict:
         return {
