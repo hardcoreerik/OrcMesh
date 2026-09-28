@@ -359,6 +359,17 @@ for one channel, i.e. **2× the 5 MSPS proven lossless here**, and double the sp
 the on-board microSD (**49.8 MS/s**, but recorded rather than live), or decimating/processing in the
 fabric. No host link can carry the converter's 61.44 MSPS: 246 MB/s against gigabit's 125 MB/s.
 
+**What 480 Mbps actually buys.** USB 2.0 High Speed is **480 Mbps of signalling — 60 MB/s — and that
+is a line rate, not a data rate.** Token packets, handshakes, bit stuffing and inter-packet gaps put
+real bulk throughput nearer **35–40 MB/s**, and RNDIS framing costs a little more on top. Measured
+here: **~25 MB/s through the RNDIS gadget** and **~30 MB/s** through libiio's raw USB backend (which is
+also the transport that wedged the board twice, so its extra speed is not free). At 4 bytes per complex
+sample that is 6.25 and 7.5 MSPS respectively.
+
+The decisive figure: **even USB 2.0 at its full 60 MB/s nominal with zero overhead would carry only
+15 MSPS — a quarter of the converter's 61.44 MSPS.** No amount of tuning the USB-C port changes that,
+which is precisely what the RJ45 is for.
+
 **Design cautions carried forward:** the ADI Windows USB driver installer is v0.9 (Win8.1-era
 signed INFs); libiio has an **0.x → 1.0 ABI break** and this machine has **0.26**; prefer the
 `ip:` transport; and **isolate libiio in a helper process**, because this device has already
