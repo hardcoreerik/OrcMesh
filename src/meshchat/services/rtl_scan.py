@@ -110,6 +110,91 @@ def _parse_power(token: str) -> float:
         return float("nan")
 
 
+#: rtl_power retunes between rows, so the tuner's own LO leakage lands at the CENTRE of every
+#: sub-band row. Measured on this bench over 902-928 MHz at 81.25 kHz: exactly **three** bins,
+#: +4.33 .. +5.89 dB above the row's neighbours, in **200 of 200** rows, and never negative.
+#: In a quiet survey it is the brightest thing present.
+ROW_ARTEFACT_BINS = 3
+
+#: How many bins either side of the artefact are used to estimate what the centre should have
+#: been. Three either side, skipping the artefact itself, so the estimate is taken from bins
+#: the artefact does not touch.
+ROW_ARTEFACT_REFERENCE_BINS = 3
+
+#: Only leave a centre alone if it stands at least this far above its neighbours. It has to be
+#: **above** the artefact's own size, which is the counter-intuitive part: a guard of 3 dB would
+#: classify the 5-6 dB artefact as a real carrier and preserve exactly what this removes. At
+#: 8 dB a genuine strong carrier is still left untouched.
+ROW_ARTEFACT_GUARD_DB = 8.0
+
+#: And it has to be a bump at all. The artefact was never once negative across 200 measured
+#: rows, so a centre that merely differs from its shoulders by noise is not it — without this
+#: floor, every quiet row would be "repaired", replacing three honest samples with a smooth
+#: estimate and reporting a correction that changed nothing real.
+ROW_ARTEFACT_MIN_DB = 2.0
+
+
+def repair_row_artefact(
+    power_db: np.ndarray,
+    *,
+    guard_db: float = ROW_ARTEFACT_GUARD_DB,
+    min_db: float = ROW_ARTEFACT_MIN_DB,
+    bins: int = ROW_ARTEFACT_BINS,
+) -> tuple[np.ndarray, bool]:
+    """Replace a sub-band row's centre bins when they are rtl_power's own LO artefact.
+
+    Returns `(repaired_row, was_repaired)`. The row is copied only when something changes, so
+    the common case costs nothing.
+
+    **Only a bump of the artefact's own size is corrected.** Two thresholds, and both would do
+    damage if moved for tidiness:
+
+    * a floor at `min_db`, because a centre differing from its shoulders only by noise is not
+      the artefact and rewriting it would replace real samples with an invented estimate;
+    * a ceiling at `guard_db`, because a survey cannot tell a carrier from the artefact by
+      shape. It can by size — the artefact never exceeds 5.9 dB — so anything clearly bigger is
+      treated as real and left alone. The ceiling must sit **above** the artefact's size; a
+      guard below it would classify the artefact as a carrier and preserve it.
+
+    The replacement is a straight line between the measured shoulders rather than a copy from
+    one side, so a slope across the row survives. Copying would bias every corrected row the
+    same way: a smaller error, but a systematic one.
+    """
+    values = np.asarray(power_db)
+    if bins < 1 or values.size < 2 * ROW_ARTEFACT_REFERENCE_BINS + bins:
+        return values, False
+
+    centre = values.size // 2
+    first = centre - bins // 2
+    last = first + bins
+    if first < ROW_ARTEFACT_REFERENCE_BINS or last + ROW_ARTEFACT_REFERENCE_BINS > values.size:
+        return values, False
+
+    left = values[first - ROW_ARTEFACT_REFERENCE_BINS:first]
+    right = values[last:last + ROW_ARTEFACT_REFERENCE_BINS]
+    left_values = left[np.isfinite(left)]
+    right_values = right[np.isfinite(right)]
+    window = values[first:last]
+    finite_window = window[np.isfinite(window)]
+    if left_values.size == 0 or right_values.size == 0 or finite_window.size == 0:
+        return values, False
+
+    shoulders = float(np.median(np.concatenate([left_values, right_values])))
+    bump = float(finite_window.max()) - shoulders
+    if not min_db <= bump < guard_db:
+        return values, False
+
+    # A straight line between the two measured shoulders, sampled at the bins it replaces.
+    span = last - first
+    start = float(np.mean(left_values))
+    end = float(np.mean(right_values))
+    replacement = start + (end - start) * ((np.arange(span) + 1) / (span + 1))
+
+    repaired = values.copy()
+    repaired[first:last] = replacement
+    return repaired, True
+
+
 def parse_power_row(line: str) -> PowerRow | None:
     """Parse one rtl_power CSV line, or return None if it is not one.
 
@@ -165,8 +250,16 @@ def merge_rows(rows: Sequence[PowerRow]) -> PowerRow:
                 "Dropping scan row with step %.1f Hz (expected %.1f Hz)", row.step_hz, step_hz,
             )
             continue
+        # Each sub-band row carries the tuner's own artefact at its centre, so it has to be
+        # corrected per row rather than once on the stitched result: after stitching there is
+        # no way to tell a row's centre from any other part of the band. Measured, not
+        # theoretical — three bins at +4.3..+5.9 dB in every row, and the brightest thing in
+        # a quiet survey.
+        power, repaired = repair_row_artefact(row.power_db)
+        if repaired:
+            log.debug("Corrected the row artefact at %.3f MHz", row.low_hz / 1e6)
         start = int(round((row.low_hz - low_hz) / step_hz))
-        for offset, value in enumerate(row.power_db):
+        for offset, value in enumerate(power):
             if not np.isfinite(value):
                 continue
             index = start + offset

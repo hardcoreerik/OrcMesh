@@ -68,6 +68,7 @@ from meshchat.services.iq_recorder import (
 from meshchat.services.rf import pluto_tx
 from meshchat.services.rtl_scan import BandPicture, ScanController, ScanRequest
 from meshchat.services.sdr_source import SdrController
+from meshchat.ui.sigint.analysis_view import AnalysisView
 from meshchat.ui.sigint.override_control import OverrideController, OverrideWarning
 from meshchat.ui.sigint.waterfall3d_view import Waterfall3DView
 from meshchat.ui.spectrum.waterfall_view import WaterfallView
@@ -121,6 +122,7 @@ class SigintPage(QWidget):
 
         layout.addWidget(self._build_toolbar())
         layout.addWidget(self._build_waterfall(), 3)
+        layout.addWidget(self._build_analysis(), 2)
         layout.addWidget(self._build_survey(), 2)
         layout.addWidget(self._build_intel(), 2)
 
@@ -347,6 +349,21 @@ class SigintPage(QWidget):
         """
         super().showEvent(event)
         self._activate_3d()
+
+    def _build_analysis(self) -> QWidget:
+        """The five analysis modes over the same capture the waterfall is showing.
+
+        Its own panel rather than more controls in the toolbar, because each mode is a picture
+        that needs the room; the mode selector is inside it so switching costs one click rather
+        than a screen of choices.
+        """
+        panel = QWidget()
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._analysis = AnalysisView()
+        outer.addWidget(self._analysis)
+        return panel
 
     def _build_survey(self) -> QWidget:
         panel = QWidget()
@@ -635,11 +652,17 @@ class SigintPage(QWidget):
     def _on_row(self, row: np.ndarray) -> None:
         self._waterfall2d.push_row(row)
         self._waterfall3d.push_row(row)
+        # The analysis modes fold the same rows the waterfall draws, so they describe what is
+        # actually being captured rather than a second, separately-tuned receiver.
+        self._analysis.push_row(row)
 
     def _on_capture_started(self, center_hz: float, rate_hz: float, bins: int) -> None:
         self._set_status(
             f"capturing {center_hz / 1e6:.3f} MHz at {rate_hz / 1e6:.2f} MS/s, {bins} bins"
         )
+        # A new capture means a new centre and span, so the accumulated history describes a
+        # different part of the band and must not be carried over.
+        self._analysis.configure(center_hz, rate_hz, bins)
         self._refresh_availability()
 
     def _on_capture_stopped(self, message: str) -> None:
@@ -682,13 +705,24 @@ class SigintPage(QWidget):
         if controller.is_transmitting:
             self._override_btn.setText("Stop")
             self._override_btn.setStyleSheet("color: #FFB800; font-weight: bold;")
+            # "configured", not "on air". The attributes are written and read back, but
+            # whether energy leaves the connector has NOT been confirmed on this hardware:
+            # measured 2026-09-28, the DDS tone and a cyclic stream both left the spectrum
+            # unchanged while every register read back exactly as written. Saying "on air"
+            # would be a claim the measurement does not support.
             self._override_lbl.setText(
-                f"ON AIR — 906.875 MHz · {controller.remaining_s:.0f} s left",
+                f"TX configured · 906.875 MHz · {controller.remaining_s:.0f} s left",
+            )
+            self._override_lbl.setToolTip(
+                "The transmitter's settings are written and read back, but that this is\n"
+                "radiating has not been verified on this board. Confirm it with an\n"
+                "independent receiver before relying on it.",
             )
         else:
             self._override_btn.setText("Override 906.875")
             self._override_btn.setStyleSheet("")
             self._override_lbl.setText("")
+            self._override_lbl.setToolTip("")
 
     def _on_override_clicked(self) -> None:
         """Warn, then transmit — or stop if a carrier is already on the air."""
