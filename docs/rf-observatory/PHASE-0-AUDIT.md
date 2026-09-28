@@ -190,10 +190,20 @@ There is no RF-event table of any kind — no burst, no occupancy, no capture, n
 
 ## 10. PlutoSDR on Windows — options, and what this machine actually has
 
-**Measured on this machine:** **libiio 0.26 is installed** (`iio_info.exe`, `iio_attr.exe` in
-`C:\Windows\System32`; backends `xml ip usb serial`). **No PlutoSDR is currently attached** —
-`iio_info -s` reports "No IIO context found" and no Analog Devices USB device is present.
-So the driver stack exists but **Stage E cannot be benchmarked until the hardware is plugged in.**
+**Attached, identified and then detached by the streaming test below (2026-09-27).** It is a
+**clone**, not an ADI reference Pluto: `hw_model: FISH Ball PlutoSDR Rev.A (Z7020-AD9361)`
+(sold as "7020-SDR" / PlutoSky / Fish-Wan), `hw_serial: b0d85d89da56de55b2ee997b00499360`,
+`fw_version: 95aad-dirty` — a locally-built firmware from the
+[fishball7020-fpga-devkit](https://github.com/matsvandamme/fishball7020-fpga-devkit)
+reconstruction, not an ADI release. **Never label it "ADALM-Pluto" in the UI**: over USB its
+descriptors *do* say `Analog Devices Inc. PlutoSDR (ADALM-PLUTO)`, while over IP it reports the
+FISH Ball string. It is reachable by **two URIs at once** with the same serial, so identity must
+come from `hw_serial`, never from the URI, or one board will appear as two receivers.
+
+libiio 0.26 is installed (`iio_info`, `iio_attr`, `iio_readdev`, `iio_writedev`, `iio_reg` in
+`C:\Windows\System32`; backends `xml ip usb serial`). Windows drivers were already healthy: the
+board enumerated with **no unknown or errored devices**, as RNDIS, IIO, mass storage and a serial
+console.
 
 Options assessed:
 
@@ -204,9 +214,56 @@ Options assessed:
 | GNU Radio | No longer WSL-only, but native Windows is a **conda/radioconda** second-class path; `gr-lora_sdr` is Linux-first | **Do not make it the runtime.** |
 | SDRangel | Genuinely first-class on Windows | Useful as an external reference/verification tool, not a dependency. |
 
-**Cautions to carry into the design:** the ADI Windows USB driver installer is v0.9 (Win8.1-era
-signed INFs); libiio has an **0.x → 1.0 ABI break** and this machine has **0.26**; prefer network
-(`ip:`) mode, falling back to USB.
+**The clone is 2 TX / 2 RX, not 1+1.** `cf-ad9361-lpc` exposes **four** input channels
+(`voltage0..3`, `le:S12/16`) = two complex RX streams; the TX DMA likewise has four. The
+firmware documents "two receivers that both survive decimation" and warns that **stock ADI
+wiring filters only channel 0, leaving channel 1 aliased by 70 dB** unless an optional patch is
+applied — so RX2 must not be trusted for RF truth until that is established on this board.
+
+**Its real streaming limits** (the firmware project's own measurements, on their bench — **not
+yet reproduced here**):
+
+| Path | 1 RX channel | 2 RX channels |
+|---|---|---|
+| Capture run on the board, no link involved | 49.8 MS/s | 46.2 MS/s each |
+| Gigabit Ethernet | ~11.3 MS/s on one example link | — |
+| **USB gadget** | **~1.7 MS/s** | — |
+
+Two consequences that change the plan:
+
+- **This box currently sees the board only over the USB gadget**, so its usable instantaneous
+  bandwidth here is roughly **±0.85 MHz** — nowhere near the 20 MHz the brief assumes, and **not
+  even wide enough for a 2 MHz LoRa window**. Wideband scouting requires the board on
+  **Ethernet**.
+- **The libiio buffer size dominates throughput.** A small buffer is measured to cost *roughly
+  two thirds* of the rate; `-b 1048576` or larger is recommended, and past a few Msamples it
+  stops helping. Their own capture command is
+  `iio_readdev -u ip:fishball.local -b 1048576 -s 33554432 cf-ad9361-lpc voltage0 voltage1`.
+
+**First benchmark attempt — inconclusive, and it dropped the device.** An `iio_readdev` sweep at
+`-b 32768` across 2.08–61.44 MSPS produced one successful read (2.083 M samples ≈ 8.3 MB in
+0.56 s ≈ 15 MB/s — the right order of magnitude for the USB-gadget ceiling, but not a controlled
+measurement, and the requested rate did not take effect), after which every later call failed
+with `Failed to reset pipes: Broken pipe (32)` and the board then **left the USB bus entirely**
+(`No such device (19)`, RNDIS adapter gone, ping fails). Pushing 30.72 MSPS through a ~1.7 MS/s
+link and a hiccup in the clone's dirty firmware are **both still candidates**; they are not yet
+separated. The board needs a physical replug, and any retry must use a large buffer and a rate the
+link can actually carry.
+
+**Design cautions carried forward:** the ADI Windows USB driver installer is v0.9 (Win8.1-era
+signed INFs); libiio has an **0.x → 1.0 ABI break** and this machine has **0.26**; prefer the
+`ip:` transport; and **isolate libiio in a helper process**, because this device has already
+demonstrated that it can take its host transport down with it.
+
+**Transmitter safety (for the future LAB mode):** the receive port survives **+2.5 dBm** (the
+AD9361's absolute maximum) while this board's PA variant reaches about **+19 dBm** — never loop TX
+into RX without at least 20 dB of attenuation, and never transmit into an open port. TX mutes
+within 250 ms if the feeding program dies, **except for a cyclic transmit, which never starves and
+so keeps transmitting indefinitely** unless `tx_cyclic_timeout_ms` is set first.
+
+**Licensing:** the devkit's own scripts, patches and documentation are **GPL-2.0**, which is *not*
+combinable with OrcMesh's GPL-3.0. Treat it as interop-only: drive the board through libiio and do
+not copy its code in. Vivado/Vitis and AMD IP are proprietary and irrelevant here.
 
 ---
 
@@ -358,4 +415,5 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | 3D waterfall rendering | **Verified** | distinct framebuffer colours 1 → 2851 |
 | Simultaneous capture on both dongles | **Not yet done** | blocked by SIGINT's capture/scan exclusion |
 | Multi-radio Meshtastic | **Not possible today** | radios are mutually exclusive by construction |
-| PlutoSDR anything | **Not verified** | no Pluto attached; libiio 0.26 present |
+| Pluto clone: identity, dual transport, 2RX/2TX, drivers | **Verified** | `iio_info -s` + `iio_attr` dumps; FISH Ball Z7020/AD9361, fw `95aad-dirty`, serial over both URIs |
+| Pluto clone: sustained streaming throughput | **Not verified** | dropped off the USB bus after one uncontrolled read; firmware project reports ~1.7 MS/s over the USB gadget vs 49.8 MS/s on-board |
