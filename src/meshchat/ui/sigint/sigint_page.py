@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -64,8 +65,10 @@ from meshchat.services.iq_recorder import (
     format_duration,
     format_size,
 )
+from meshchat.services.rf import pluto_tx
 from meshchat.services.rtl_scan import BandPicture, ScanController, ScanRequest
 from meshchat.services.sdr_source import SdrController
+from meshchat.ui.sigint.override_control import OverrideController, OverrideWarning
 from meshchat.ui.sigint.waterfall3d_view import Waterfall3DView
 from meshchat.ui.spectrum.waterfall_view import WaterfallView
 from meshchat.ui.widgets.levels_control import LevelsControl
@@ -108,6 +111,9 @@ class SigintPage(QWidget):
         self._scanning = False
         self._recording = False
         self._last_capture: CaptureInfo | None = None
+        # Constructed before the toolbar, because building the toolbar is what connects
+        # the button to it.
+        self._override = OverrideController(on_state=self._on_override_state)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -240,6 +246,23 @@ class SigintPage(QWidget):
         self._record_btn.setFixedWidth(76)
         self._record_btn.clicked.connect(self._on_record_clicked)
         row.addWidget(self._record_btn)
+
+        # The only control here that puts energy on the air. Its warning is in
+        # override_control.py; the button itself only ever asks for it.
+        self._override_btn = QPushButton("Override 906.875")
+        self._override_btn.setToolTip(
+            "Transmit a continuous 30 s carrier on 906.875 MHz (US channel slot 19) from the "
+            "Pluto's TX1, to test overriding nearby mesh radios. You are warned before "
+            "anything is transmitted, and the button becomes Stop while it is running.",
+        )
+        self._override_btn.clicked.connect(self._on_override_clicked)
+        row.addWidget(self._override_btn)
+
+        # Its own label: the countdown rewrites often while a tone runs, and sharing
+        # _status would erase whatever capture state was being shown.
+        self._override_lbl = QLabel("")
+        self._override_lbl.setStyleSheet("color: #FFB800; font-size: 11px;")
+        row.addWidget(self._override_lbl)
 
         row.addStretch()
 
@@ -649,6 +672,38 @@ class SigintPage(QWidget):
     # Recording
     # ------------------------------------------------------------------
 
+    def _on_override_state(self, controller) -> None:
+        """Keep the button and the countdown describing what the transmitter is doing.
+
+        The button becomes Stop while a carrier is on the air, so the control that started
+        it is the control that ends it. There is no state where the tone is running and the
+        only way to stop it is to guess.
+        """
+        if controller.is_transmitting:
+            self._override_btn.setText("Stop")
+            self._override_btn.setStyleSheet("color: #FFB800; font-weight: bold;")
+            self._override_lbl.setText(
+                f"ON AIR — 906.875 MHz · {controller.remaining_s:.0f} s left",
+            )
+        else:
+            self._override_btn.setText("Override 906.875")
+            self._override_btn.setStyleSheet("")
+            self._override_lbl.setText("")
+
+    def _on_override_clicked(self) -> None:
+        """Warn, then transmit — or stop if a carrier is already on the air."""
+        if self._override.is_transmitting:
+            self._override.stop()
+            return
+        if not OverrideWarning.confirm(self):
+            return
+        try:
+            plan = self._override.start()
+        except (pluto_tx.ToneFailed, pluto_tx.AlreadyTransmitting) as exc:
+            QMessageBox.critical(self, "Could not transmit", str(exc))
+            return
+        log.warning("Override carrier on the air: %s", plan.describe())
+
     def _on_record_clicked(self) -> None:
         if self._recording:
             if self._sdr is not None:
@@ -912,7 +967,13 @@ class SigintPage(QWidget):
     # ------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Stop everything this page started, for window close."""
+        """Stop everything this page started, for window close.
+
+        The override tone is stopped FIRST. Everything else here is a receiver, and a
+        receiver left running is a wasted dongle; a transmitter left running is energy on
+        the air, which is a different order of problem.
+        """
+        self._override.shutdown()
         self._waterfall3d.stop()
         if self._sdr is not None:
             self._sdr.shutdown()
