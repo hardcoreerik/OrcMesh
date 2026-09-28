@@ -146,9 +146,20 @@ about. Bench: **COM24** = `Hardcoreerik`/`hrdc`, node `2859752693`, **HELTEC_V4*
    device the user asked to be left alone.
 
 `services/radios/` now provides this layer: `base.py` (transports, preference, address
-normalisation), `registry.py` (enumeration and grouping, no port opened), `lease.py`
-(per-radio ownership, plus a `hold()` context manager so a failed connect cannot leave a
-radio reading as busy — the bug that had to be fixed by hand on the SDR side).
+normalisation), `registry.py` (enumeration and grouping, no port opened), `identification.py`
+(the one thing here that opens a port, and only when asked), `lease.py` (per-radio ownership,
+plus a `hold()` context manager so a failed connect cannot leave a radio reading as busy — the
+bug that had to be fixed by hand on the SDR side).
+
+**Identification is the deliberate exception to opening nothing, and says so.** Its default
+timeout is 45 s, deliberately above the measured 13.6 s connect, because a ten-second timeout
+would report healthy radios as broken. It reports failure as *unidentified* rather than broken:
+nothing can distinguish "not a radio" from "a radio that is unwell", so the message lists the
+possibilities and names the port instead of guessing one. Verified live against both radios —
+`COM24: Hardcoreerik (HELTEC_V4, fw 2.8.0.47db0e3)`, `COM16: hardcore_Tbeam
+(LILYGO_TBEAM_S3_CORE, fw 2.7.26.54e0d8d)` — with the lease taken from the hardware address,
+the node number learned, and every lease released afterwards. COM17 was not opened at any
+point, which is why enumeration opens nothing in the first place.
 
 **A radio's identity arrives in stages, and the lease follows it.** It is leased under its
 hardware address, because that is all that is known before anything is connected; the node

@@ -1,10 +1,12 @@
-"""The radio device layer: identity, enumeration, and who holds what.
+"""The radio device layer: identity, enumeration, identification, and who holds what.
 
 Separate from `services/rf/`, which is the SDR side of the same observatory. The two do
 not overlap: an SDR receives, a Meshtastic radio is a peer on a mesh. They share a shape
 — identify a device, enumerate without opening it, lease it to one owner — because both
 run into the same class of problem: one physical device reachable more than one way, with
 the operating system protecting only one of those ways.
+
+Only `identification.py` opens anything, and only when a caller explicitly asks it to.
 """
 from __future__ import annotations
 
@@ -20,6 +22,12 @@ from .base import (
     look_like_mac,
     mac_family,
     transport_rank,
+)
+from .identification import (
+    CONNECT_TIMEOUT_S,
+    RadioInfo,
+    RadioUnidentified,
+    identify,
 )
 from .lease import (
     RadioBusy,
@@ -47,11 +55,14 @@ __all__ = [
     "SERIAL",
     "TCP",
     "UNRANKED",
+    "CONNECT_TIMEOUT_S",
     "BleAdvertisement",
     "Candidate",
     "PortSummary",
     "RadioBusy",
     "RadioCandidate",
+    "RadioInfo",
+    "RadioUnidentified",
     "RadioTransport",
     "acquire_radio",
     "add_identity",
@@ -59,6 +70,7 @@ __all__ = [
     "candidates",
     "held_radios",
     "hold",
+    "identify",
     "look_like_mac",
     "mac_family",
     "owner_radios",
