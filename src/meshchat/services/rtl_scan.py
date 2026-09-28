@@ -365,8 +365,9 @@ class ScanWorker(QObject):
             return
 
         try:
-            self._proc = subprocess.Popen(
+            self._proc = rtl_tools.spawn(
                 command,
+                label=self._label,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 creationflags=rtl_tools.creation_flags(),
@@ -434,6 +435,7 @@ class ScanWorker(QObject):
         """Tear the child process down; return (last thing it said, exit code)."""
         proc, self._proc = self._proc, None
         rtl_tools.release_sdr(self._owner, self._device)
+        rtl_tools.untrack_child(proc)
         code: int | None = proc.poll() if proc is not None else None
         if proc is not None:
             if proc.poll() is None:

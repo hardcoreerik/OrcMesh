@@ -54,9 +54,13 @@ class _ExitedTool:
 
     reads return EOF immediately, which is exactly how the loop discovers
     rtl_sdr is gone.
+
+    The pid is here because the loop really does read it: a child has to be
+    tracked to be reaped on exit, and tracking is keyed on the pid.
     """
 
     returncode = 1
+    pid = 4242
 
     def __init__(self, stderr_text: str = "") -> None:
         self.stdout: io.BytesIO = io.BytesIO(b"")

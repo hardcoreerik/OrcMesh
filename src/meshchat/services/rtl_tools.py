@@ -26,6 +26,7 @@ Verified against the real tools on a Blog V4:
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import re
@@ -33,6 +34,7 @@ import shutil
 import subprocess
 import threading
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
@@ -427,6 +429,102 @@ def sdr_owner(device: int = 0) -> str:
     with _sdr_lock:
         held = _sdr_owners.get(device)
         return held[1] if held is not None else ""
+
+
+#: Children this process has started and not yet seen exit. The lease above records who
+#: *intends* to hold a dongle; this records which processes *actually* exist. The two can
+#: disagree in one way that matters: OrcMesh goes away without running its stop path, the
+#: child keeps the device open, and the next launch reports a busy dongle with no capture
+#: running and nothing for the user to stop. Reaping at exit is what closes that gap.
+_children: dict[int, tuple[str, subprocess.Popen[bytes]]] = {}
+_children_lock = threading.Lock()
+_atexit_hooked = False
+
+
+def _hook_atexit() -> None:
+    global _atexit_hooked
+    if _atexit_hooked:
+        return
+    atexit.register(terminate_children)
+    _atexit_hooked = True
+
+
+def track_child(process: subprocess.Popen[bytes], label: str) -> None:
+    """Remember a child so it can be reaped later. Idempotent per process."""
+    with _children_lock:
+        _children[process.pid] = (label, process)
+    _hook_atexit()
+
+
+def untrack_child(process: subprocess.Popen[bytes] | None) -> None:
+    """Forget a child that has been waited on. Safe to call with None."""
+    if process is None:
+        return
+    with _children_lock:
+        _children.pop(process.pid, None)
+
+
+def tracked_children() -> list[str]:
+    """Labels of the children still believed to be running, for a diagnostics view."""
+    with _children_lock:
+        return [label for label, _ in _children.values()]
+
+
+def terminate_children(timeout_s: float = 2.0) -> int:
+    """Terminate every tracked child that has not exited; return how many were stopped.
+
+    Registered with `atexit` the first time a child is tracked, so a clean exit and an
+    unhandled exception both release the hardware rather than leaving a dongle held by a
+    process nobody can see. It must therefore not raise and must not wait long: a wedged
+    driver that ignores `terminate()` gets killed, and anything still unresponsive after
+    that is left to the OS rather than holding the app open on the way out.
+
+    This does **not** cover a hard kill of OrcMesh itself (Task Manager, a power loss).
+    A Windows Job Object would, and is the documented upgrade; it needs the Win32 API and
+    a per-child assignment at spawn, which is future work rather than a claim.
+    """
+    with _children_lock:
+        children = list(_children.values())
+        _children.clear()
+
+    stopped = 0
+    for label, process in children:
+        if process.poll() is not None:
+            continue
+        try:
+            process.terminate()
+            process.wait(timeout=timeout_s)
+            stopped += 1
+            log.info("Reaped %s (pid %d) on exit", label, process.pid)
+        except subprocess.TimeoutExpired:
+            log.warning("%s (pid %d) ignored terminate(); killing it", label, process.pid)
+            try:
+                process.kill()
+                process.wait(timeout=timeout_s)
+                stopped += 1
+            except (OSError, subprocess.TimeoutExpired):
+                log.error("%s (pid %d) could not be killed", label, process.pid)
+        except OSError:
+            # Already gone, or not ours to signal.
+            log.debug("Could not terminate %s (pid %d)", label, process.pid, exc_info=True)
+    return stopped
+
+
+def spawn(
+    args: Sequence[str | Path], *, label: str, **kwargs: object,
+) -> subprocess.Popen[bytes]:
+    """Start a tool and remember the child.
+
+    Every capture and every survey goes through here rather than calling `Popen`
+    directly: an untracked child is a child that can outlive the app still holding the
+    dongle, and that is not a mistake worth leaving available to the next feature that
+    needs a device.
+    """
+    process = subprocess.Popen(  # type: ignore[call-overload]
+        [str(part) for part in args], **kwargs,
+    )
+    track_child(process, label)
+    return process
 
 
 #: The tuner's own gain table, as ``rtl_test -t`` reports it on the R828D/R820T

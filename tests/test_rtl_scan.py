@@ -61,9 +61,14 @@ def _row(low_hz: float, high_hz: float, values, step_hz: float = 125_000.0) -> P
 
 
 class _ExitedTool:
-    """As much of a Popen as the scan loop touches, already exited."""
+    """As much of a Popen as the scan loop touches, already exited.
+
+    The pid is here because the loop really does read it: a child has to be
+    tracked to be reaped on exit, and tracking is keyed on the pid.
+    """
 
     returncode = 1
+    pid = 4243
 
     def __init__(self, stderr_text: str = "") -> None:
         self.stdout: io.BytesIO = io.BytesIO(b"")

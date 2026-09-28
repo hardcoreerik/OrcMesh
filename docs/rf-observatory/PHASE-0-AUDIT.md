@@ -134,6 +134,22 @@ each `SdrController` owns its thread and subprocess, and the FFT is stateless.
   never reclaimed.
 - Release happens only in `_close()` (`sdr_source.py:410`, `rtl_scan.py:433`).
 
+**Orphaned children — measured, then fixed.** The lease only records who *intends* to hold a
+dongle; on its own it says nothing about which processes still exist. Proved with a control: a
+child started through a plain `subprocess.Popen` and **not** tracked **survived its parent's
+clean exit** and kept the device open, and the very next launch then enumerated the hardware as
+`2 RTL-SDR dongle(s) found: , , SN: ÿ` — names blank, serial garbage. That is the mechanism
+behind the "name unreadable (blank EEPROM, or the device is in use)" case recorded earlier,
+which until now had no reproduction. The same test with `rtl_tools.spawn` left **no** surviving
+process and the next launch enumerated both dongles correctly.
+
+`rtl_tools` now keeps `_children` (pid → label, process), `spawn()` tracks every child and is
+the only way the workers start one, `_close()` untracks, and `terminate_children()` is
+registered with `atexit` on first track. **Not covered:** a hard kill of OrcMesh itself
+(Task Manager, power loss) still orphans the child. A Windows Job Object would close that and
+is the documented upgrade — it needs the Win32 API and a per-child assignment at spawn, so it
+is recorded as future work rather than claimed.
+
 **Backpressure:** `row_ready` is an **unbounded** queued Qt signal (~60 rows/s × 1024 float32)
 with **no coalescing and no drop counter**. Everything else is fixed-size (`_MAX_PENDING_ROWS=64`,
 widget histories of 300 rows, `BandAccumulator` fixed to sweep geometry). The brief's requirement
@@ -511,7 +527,8 @@ Qt-facades, `services/` for backends, `analytics/` for pure computation, `databa
 services/rf/                     NEW — device layer, no Qt
   base.py            RfDeviceInfo, RfBackend protocol (open/stream/stop/capabilities)
   registry.py        what is attached, capability-oriented; wraps existing rtl_tools discovery
-  lease.py           generalised ownership: per-device, with TTL + release-on-error + reclaim
+  lease.py           generalised ownership: per-device, TTL + release-on-error + reclaim,
+                     and the tracked-child registry that reaps orphans at exit
   rtl_backend.py     WRAPS the existing, hardware-verified rtl_sdr/rtl_power subprocess path
   pluto_backend.py   libiio over URI (ip: preferred), helper process
   replay_backend.py  file/IQ source, so every DSP stage is testable offline
@@ -622,3 +639,6 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | Pluto clone: Ethernet path | **Working and measured** | pinned at `192.168.1.50` by a static `ipaddr_eth`; the cause was a churning DHCP address, not a service-binding fault |
 | Pluto clone: capability probe | **Verified on hardware** | `2,083,333 .. 61,440,000 Hz`, gain `-1 .. 73 dB`, bandwidth to `56 MHz`, **12 bits in 16-bit containers = 4 bytes/complex**; the 12-bit answer only appeared after the receive-DMA fix |
 | Capability probe never raises | **Verified** | a runner that fails degrades to an empty attribute plus a note; probing a wedged board must not throw from a listing refresh |
+| Child reaping: tracked child | **Verified on hardware** | `rtl_power` (pid 32672) running and holding a dongle, parent exited, **no surviving process**, next launch enumerated both dongles |
+| Child reaping: untracked control | **Verified on hardware** | same child via plain `Popen` **survived** the parent and made the next launch read `2 dongle(s) found: , , SN: ÿ` |
+| Child reaping, hard kill | **Not covered** | `atexit` does not run on a Task Manager kill; a Job Object is needed and is not claimed |
