@@ -346,6 +346,19 @@ counter: idle it reports `CH0..CH3 : PN9 : Out of Sync : PN Error`, which only m
 being fed. It would need BIST in a pseudorandom mode to mean anything, so the phase-continuity method
 above is the one to rely on.
 
+**The socket is USB-C, but the interface behind it is USB 2.0 — a chip limit, not a cable choice.**
+USB-C is a connector standard and says nothing about speed; USB 2.0 over USB-C is entirely normal. The
+Zynq **XC7Z020**'s processing system has **USB 2.0 OTG only** — USB 3.x arrives with Zynq UltraScale+,
+not Zynq-7000 — and the firmware project's README calls the data port "the USB 2.0 socket" (the other
+USB-C is `DEBUG`, an FT2232H, also USB 2.0). Measured confirmation: the RNDIS gadget negotiates
+**426 Mbps**, i.e. USB 2.0 High Speed less overhead, where SuperSpeed would report gigabits. The
+~25 MB/s ceiling is therefore the physical interface, not a configuration mistake.
+
+The board's fast paths are **not USB**: gigabit Ethernet (RTL8211F; the vendor measures ~10 MSPS clean
+for one channel, i.e. **2× the 5 MSPS proven lossless here**, and double the span at ±5 MHz), capture to
+the on-board microSD (**49.8 MS/s**, but recorded rather than live), or decimating/processing in the
+fabric. No host link can carry the converter's 61.44 MSPS: 246 MB/s against gigabit's 125 MB/s.
+
 **Design cautions carried forward:** the ADI Windows USB driver installer is v0.9 (Win8.1-era
 signed INFs); libiio has an **0.x → 1.0 ABI break** and this machine has **0.26**; prefer the
 `ip:` transport; and **isolate libiio in a helper process**, because this device has already
