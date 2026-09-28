@@ -247,6 +247,11 @@ class SdrWorker(QObject):
                 creationflags=rtl_tools.creation_flags(),
             )
         except OSError as exc:
+            # The lease is taken before the spawn on purpose — that is what stops two
+            # features opening the same dongle — so a spawn that never happened has to
+            # hand it back. Without this the device reads as busy for the rest of the
+            # session, with no capture running and nothing for the user to stop.
+            rtl_tools.release_sdr(self._owner, device_index)
             log.exception("Could not start rtl_sdr")
             self.error.emit(f"Could not start rtl_sdr: {exc}")
             return

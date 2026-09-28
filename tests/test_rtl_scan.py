@@ -445,6 +445,28 @@ class TestScanWorkerSignals:
 
         assert worker._proc is None
 
+    def test_a_spawn_that_never_happened_gives_the_dongle_back(self, monkeypatch):
+        """The capture worker had the same defect: the lease precedes the spawn."""
+        monkeypatch.setattr(rtl_tools, "find_tool", lambda name: rtl_tools.Path("rtl_power"))
+        device = 8
+        rtl_tools.release_sdr("hygiene", device)
+
+        def refuse(*_args, **_kwargs):
+            raise OSError("no more handles")
+
+        monkeypatch.setattr(rtl_scan.subprocess, "Popen", refuse)
+
+        worker = ScanWorker()
+        errors: list[str] = []
+        worker.error.connect(errors.append)
+
+        worker.start(ScanRequest(low_hz=902e6, high_hz=928e6, device_index=device))
+
+        assert errors and "Could not start rtl_power" in errors[0]
+        assert rtl_tools.sdr_owner(device) == "", (
+            "a failed spawn left the dongle leased, so nothing can scan it again"
+        )
+
 
 class TestScanControllerThreading:
     """The click of "Scan region" hands the request to the worker across threads.

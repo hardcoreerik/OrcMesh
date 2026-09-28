@@ -372,6 +372,9 @@ class ScanWorker(QObject):
                 creationflags=rtl_tools.creation_flags(),
             )
         except OSError as exc:
+            # See sdr_source.start: the lease is taken before the spawn, so a spawn
+            # that failed has to release it or the dongle stays busy until restart.
+            rtl_tools.release_sdr(self._owner, request.device_index)
             log.exception("Could not start rtl_power")
             self.error.emit(f"Could not start rtl_power: {exc}")
             return

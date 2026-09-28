@@ -320,6 +320,34 @@ class TestCaptureLoopSignals:
 
         assert worker._proc is None
 
+    def test_a_spawn_that_never_happened_gives_the_dongle_back(self, monkeypatch):
+        """The lease is taken before the spawn, so a failed spawn must release it.
+
+        Otherwise the dongle reads as busy for the rest of the session while nothing
+        is actually holding it, and there is no capture left for the user to stop.
+        """
+        monkeypatch.setattr(rtl_tools, "find_tool", lambda name: rtl_tools.Path("rtl_sdr"))
+        # An index no other test uses, so a lease held elsewhere cannot make this
+        # assertion pass or fail for the wrong reason.
+        device = 9
+        rtl_tools.release_sdr("hygiene", device)
+
+        def refuse(*_args, **_kwargs):
+            raise OSError("no more handles")
+
+        monkeypatch.setattr(subprocess, "Popen", refuse)
+
+        worker = SdrWorker()
+        errors: list[str] = []
+        worker.error.connect(errors.append)
+
+        worker.start(915_000_000.0, 2_048_000.0, 16.0, device)
+
+        assert errors and "Could not start rtl_sdr" in errors[0]
+        assert rtl_tools.sdr_owner(device) == "", (
+            "a failed spawn left the dongle leased, so nothing can capture from it again"
+        )
+
 
 class TestCommandLine:
     def test_auto_gain_is_spelled_the_way_rtl_sdr_wants_it(self):

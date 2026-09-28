@@ -108,9 +108,12 @@ The brief's role table assumes RTL #0/#1/#2 (three). Plan for two; let the model
 
 **Two real defects found, both worth fixing before any abstraction is added:**
 
-1. **Lease leak.** If `subprocess.Popen` raises `OSError` after a successful acquire, neither
-   worker releases the device (`sdr_source.py:237→244-252`, `rtl_scan.py:360→368-376`). The
-   dongle stays marked busy until the app restarts.
+1. **Lease leak — FIXED on this branch.** If `subprocess.Popen` raises `OSError` after a
+   successful acquire, neither worker released the device (`sdr_source.py:237→244-252`,
+   `rtl_scan.py:360→368-376`), so the dongle stayed marked busy until the app restarted.
+   Both now release in the failure path. Confirmed by disabling `release_sdr` and starting a
+   capture whose spawn raises: dongle 3's owner stayed `"the spectrum view"` before the fix,
+   and is empty after it. Regression tests in `test_sdr_source.py` and `test_rtl_scan.py`.
 2. **Orphaned children.** There is no Windows job object, no `atexit`, no process group. If
    OrcMesh is killed, `rtl_sdr`/`rtl_power` survive and keep the dongle. The only teardown is
    `closeEvent` → `sigint_page.shutdown()` / `spectrum_page.shutdown()`.
