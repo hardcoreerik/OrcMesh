@@ -96,6 +96,60 @@ TODO/FIXME markers in `src/`.
 - **No table has a device/source column** (`database/schema.py:66,93,109`).
 - Counter-example already done right: SDR leases *are* per device index.
 
+### 4a. What the second radio changed — measured 2026-09-27
+
+A second radio was attached, so the assumptions above are now tested rather than reasoned
+about. Bench: **COM24** = `Hardcoreerik`/`hrdc`, node `2859752693`, **HELTEC_V4**, firmware
+`2.8.0.47db0e3`; **COM16** = `hardcore_Tbeam`, node `1130080812`,
+**LILYGO_TBEAM_S3_CORE**, firmware `2.7.26.54e0d8d`.
+
+1. **Two radios connect at once — verified.** COM24 was opened, then COM16 was opened
+   *while COM24 was still connected*, and both reported themselves connected with distinct
+   node numbers. Mutual exclusion is therefore **ours, not the platform's**: there is no
+   singleton in the library (the only module-level global, `mt_config`, holds CLI plumbing),
+   and each `SerialInterface` owns its own port. The exclusivity is exactly the
+   `_close_interface()` at `:613`, `:706`, `:773`, and nothing more.
+2. **Opening the same port twice is refused by the OS** —
+   `SerialException: PermissionError(13, 'Access is denied.')`. Worth knowing, because it
+   makes a *port* lock redundant and hides the real hazard in the next point.
+3. **One radio has two doors, and the OS protects only one.** The Heltec answers on COM24
+   *and* advertises BLE `44:1B:F6:6F:81:BD`; the T-Beam answers on COM16 *and* advertises
+   `48:CA:43:5B:AA:2D`. The port lock cannot see the Bluetooth door, so a lease keyed on
+   the transport would let a cable session and a Bluetooth session drive one board. The
+   lease is keyed on the **radio** for this reason.
+4. **The serial number is a MAC, and the Bluetooth address is that MAC plus one.** Both
+   boards, same offset — Heltec `44:1B:F6:6F:81:BC` vs `..:BD`; T-Beam `48CA435BAA2C` vs
+   `48:CA:43:5B:AA:2D`. Two independent boards makes this a convention rather than a
+   coincidence, and it is what lets the two doors be grouped **without opening anything**.
+   It remains a hint for avoiding a double-open, never a statement of identity: identity is
+   the node number, which only comes from connecting.
+5. **`MeshInterface.isConnected` is a `threading.Event`, not a bool**
+   (`mesh_interface.py:106`). The library itself only ever calls `.wait()`, `.is_set()` and
+   `.clear()`. Any `if iface.isConnected:` would be **always true**, including while
+   disconnected, because an Event object is truthy whether or not it is set. Nothing in
+   OrcMesh does this today; it is recorded because multi-radio work is exactly where such a
+   check gets written.
+6. **A second serial connect costs ~13.6 s.** Any connect timeout must exceed that, and a
+   candidate list must never connect on a refresh.
+7. **A lesson about the first version of this code.** `mac_family` initially accepted only
+   colon-separated addresses, so the T-Beam — which reports `48CA435BAA2C`, the same MAC
+   with no separators — was listed twice and told it had no hardware address. The unit
+   tests passed, because one of them *asserted that wrong answer* from a real fixture. The
+   hardware disproved it. A fixture taken from reality only helps if the expectation
+   written against it is derived rather than assumed.
+8. **One attached device is not a radio and must not be probed.** COM17 is an Espressif
+   `303A:1001` USB device that never completes the Meshtastic handshake, and it is
+   explicitly off-limits. It is therefore listed as an unidentified candidate and never
+   contacted. **Enumeration opens nothing** (`services/radios/registry.py`), which is why a
+   refresh is instant and safe; identification is a separate, explicit act that must be
+   cancellable and time-limited, because on this machine it would otherwise hang on a
+   device the user asked to be left alone.
+
+`services/radios/` now provides this layer: `base.py` (transports, preference, address
+normalisation), `registry.py` (enumeration and grouping, no port opened), `lease.py`
+(per-radio ownership, plus a `hold()` context manager so a failed connect cannot leave a
+radio reading as busy — the bug that had to be fixed by hand on the SDR side).
+
 ---
 
 ## 5. Multi-RTL capability today — and the bugs the audit found
@@ -668,3 +722,9 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | Capture health on real hardware | **Verified, no false alarm** | 5 s @ 2.048 MS/s, 5 s @ 2.4 MS/s, 20 s @ 2.4 MS/s: all **lag 0 ms, 0.000% shortfall**, 224/260/1364 rows |
 | `effective_rate_hz` accuracy | **Measured, and biased high** | +0.87% / +0.47% / +0.21% over those runs; shrinks with duration, so a window offset rather than the hardware |
 | `rtl_sdr` overrun reporting | **Absent** | an unread stdout stalls it: 0 bytes in 6 s and no overrun line on stderr, so loss cannot be parsed from its output |
+| Two Meshtastic radios at once | **Verified** | COM24 (Heltec V4, node 2859752693) and COM16 (T-Beam S3 Core, node 1130080812) connected simultaneously; second open took 13.6 s |
+| Same serial port twice | **Refused by the OS** | `SerialException: PermissionError(13, 'Access is denied.')` |
+| One radio, two transports | **Verified on both boards** | serial MAC vs BLE MAC+1: Heltec `..81:BC`/`..81:BD`, T-Beam `48CA435BAA2C`/`48:CA:43:5B:AA:2D`; the OS protects only the port |
+| Radio grouping without opening anything | **Verified live** | enumerates 3 candidates (2 radios + 1 non-radio device), each radio once with both doors, no port opened |
+| `MultiInterface.isConnected` truthiness | **A trap, not a bug yet** | it is a `threading.Event`; `if iface.isConnected:` is always true. OrcMesh does not do this today |
+| Multi-radio in the app (Stage C proper) | **Not started** | the lease and registry land; the controller still holds one interface and closes it on every connect |
