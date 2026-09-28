@@ -381,6 +381,17 @@ service is reachable; (2) **record to the board's own microSD**, 49.8 MS/s — n
 but recorded rather than live, then copied off; (3) **process in the fabric**, decimating or detecting
 on the board and sending only events, which is the only route to genuine wideband coverage.
 
+**Why a high rate is advertised at all, and when it is real.** The rate is a *converter* capability, not a
+promise about the link, and it is genuinely usable — just not by streaming raw samples. It buys
+**instantaneous coverage** rather than throughput: record on-board (49.8 MS/s measured), or decimate in
+the fabric, where configuring 61.44 MSPS and sending only 7.68 MSPS to the host is normal and still sees
+the whole ~60 MHz in one look. This is the norm across the SDR world rather than anything clone-specific: a
+genuine ADALM-PLUTO advertises 61.44 MSPS over USB 2.0 on the same terms, and a HackRF One advertises
+20 MSPS over USB 2.0. Vendors quote the chip because it is the one comparable, host-independent figure; the
+sustainable rate depends on the host, the link and what else is on the bus. The fair criticism is that this
+is **under-specified rather than false** — hence the two budgets kept separate throughout this audit, and
+every number labelled verified, measured or unmeasured.
+
 **Design cautions carried forward:** the ADI Windows USB driver installer is v0.9 (Win8.1-era
 signed INFs); libiio has an **0.x → 1.0 ABI break** and this machine has **0.26**; prefer the
 `ip:` transport; and **isolate libiio in a helper process**, because this device has already
