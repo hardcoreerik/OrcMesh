@@ -130,6 +130,13 @@ class SpectrumPage(QWidget):
         self._status.setStyleSheet("color: #5A6690; font-size: 11px;")
         tb.addWidget(self._status)
 
+        # Its own label for the same reason the band warning has one: this is
+        # rewritten about once a second while a capture runs, so sharing _status
+        # would erase "Starting…" before the user ever read it.
+        self._health_lbl = QLabel("")
+        self._health_lbl.setStyleSheet("color: #5A6690; font-size: 11px;")
+        tb.addWidget(self._health_lbl)
+
         layout.addWidget(toolbar)
 
         # ── Custom frequency marker toolbar ─────────────────────────────
@@ -373,6 +380,7 @@ class SpectrumPage(QWidget):
             self._sdr.started.connect(self._on_started)
             self._sdr.stopped.connect(self._on_stopped)
             self._sdr.error.connect(self._on_error)
+            self._sdr.health.connect(self._on_health)
 
         center_hz = self._center.value() * 1e6
         rate_hz = self._rate.value() * 1e6
@@ -386,6 +394,7 @@ class SpectrumPage(QWidget):
             self._sdr.stop()
         self._running = False
         self._start_btn.setText("Start")
+        self._health_lbl.setText("")
 
     def _on_started(self, center_hz: float, span_hz: float, bins: int) -> None:
         self._waterfall.configure(center_hz, span_hz, bins)
@@ -399,11 +408,31 @@ class SpectrumPage(QWidget):
         self._running = False
         self._start_btn.setText("Start")
         self._status.setText(reason)
+        self._health_lbl.setText("")
+
+    def _on_health(self, health) -> None:
+        """Show how far behind the capture is, and only when it is worth saying.
+
+        A healthy capture says nothing beyond the rate it is really managing. That is
+        deliberate: a label that always reads "0 ms behind" trains the eye to ignore
+        it, and the one moment it matters is the moment it changes. When it degrades
+        the text changes and turns amber, which is the only version of this display
+        that a user can act on.
+        """
+        if health is None:
+            self._health_lbl.setText("")
+            return
+        self._health_lbl.setText(health.describe())
+        lagging = not health.is_keeping_up or health.shortfall_percent >= 1.0
+        self._health_lbl.setStyleSheet(
+            "color: #FFB800; font-size: 11px;" if lagging else "color: #5A6690; font-size: 11px;"
+        )
 
     def _on_error(self, message: str) -> None:
         self._running = False
         self._start_btn.setText("Start")
         self._status.setText("Error")
+        self._health_lbl.setText("")
         self._notice.setText(message)
         self._notice.setVisible(True)
         log.error("SDR error: %s", message)

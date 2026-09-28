@@ -28,6 +28,7 @@ class _FakeController(QObject):
     error = Signal(str)
     recording_finished = Signal(object)
     recording_failed = Signal(str)
+    health = Signal(object)
 
     def __init__(self, parent=None, *, label: str = ""):
         super().__init__(parent)

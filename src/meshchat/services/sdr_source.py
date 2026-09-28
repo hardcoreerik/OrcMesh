@@ -644,6 +644,7 @@ class SdrController(QObject):
     error = Signal(str)
     recording_finished = Signal(object)  # iq_recorder.CaptureInfo
     recording_failed = Signal(str)
+    health = Signal(object)              # sdr_source.CaptureHealth
 
     def __init__(self, parent=None, *, label: str = "the spectrum view"):
         super().__init__(parent)
@@ -657,8 +658,14 @@ class SdrController(QObject):
         self._worker.error.connect(self.error)
         self._worker.recording_finished.connect(self.recording_finished)
         self._worker.recording_failed.connect(self.recording_failed)
+        self._worker.health.connect(self.health)
 
         self._thread.start()
+
+    @property
+    def health_report(self) -> CaptureHealth | None:
+        """The latest figure, read directly so a polled display need not wait a second."""
+        return self._worker.capture_health()
 
     def start(
         self,
