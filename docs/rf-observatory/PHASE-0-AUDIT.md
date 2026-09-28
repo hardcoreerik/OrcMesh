@@ -543,7 +543,7 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | Stage | Content | Hardware needed |
 |---|---|---|
 | **A** | This audit + architecture docs | none |
-| **B** | RF device registry/capability model, **lease leak + orphaned-child fixes**, drop/frame accounting, replay backend + fixtures | none (unit) |
+| **B** | RF device registry/capability model — **identity + transports landed** (`services/rf/`), capabilities next; **lease-leak fix landed**; orphaned-child reaping; drop/frame accounting; replay backend + fixtures | none (unit) |
 | **C** | Multi-radio radios + `LogicalPacket`/`ReceptionObservation` + migration v3 | 1–2 radios |
 | **D** | Orchestrator + roles on the existing RTL backend; remove capture/scan exclusion | 2 RTLs |
 | **E** | Pluto backend + measured capability benchmark | **Pluto — currently absent, stage blocked for verification** |
