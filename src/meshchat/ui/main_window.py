@@ -240,7 +240,7 @@ class MainWindow(QMainWindow):
         # SDR controllers, because the dongle can only be held in one place at a
         # time and the Spectrum tab has its own.
         from meshchat.ui.sigint.sigint_page import SigintPage
-        self._sigint_page = SigintPage()
+        self._sigint_page = SigintPage(store=self._store)
         self._lora_summary = None
 
         from meshchat.ui.device.device_page import DevicePage

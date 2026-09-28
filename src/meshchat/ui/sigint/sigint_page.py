@@ -67,6 +67,7 @@ from meshchat.services.iq_recorder import (
 )
 from meshchat.services.rf import pluto_tx
 from meshchat.services.rtl_scan import BandPicture, ScanController, ScanRequest
+from meshchat.services.sigint_tuning import SigintTuning
 from meshchat.services.sdr_source import SdrController
 from meshchat.ui.sigint.analysis_view import AnalysisView
 from meshchat.ui.sigint.override_control import OverrideController, OverrideWarning
@@ -103,9 +104,13 @@ _DEFAULT_GAIN_DB = rtl_tools.DEFAULT_GAIN_DB
 class SigintPage(QWidget):
     """Receive-only signal intelligence: spectrum, band survey, packet intel."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, store=None):
         super().__init__(parent)
 
+        #: Optional settings store. Kept optional so the page works in tests and in any
+        #: context without persistence, and so a failure to reach the store can never stop a
+        #: capture from starting.
+        self._store = store
         self._sdr: SdrController | None = None
         self._scan: ScanController | None = None
         self._capturing = False
@@ -134,7 +139,47 @@ class SigintPage(QWidget):
         # status line stays with the toolchain summary rather than the preset note,
         # which the operator gets the moment they pick a preset themselves.
         self._apply_preset(default_preset(), announce=False)
+        self._restore_tuning()
 
+    # ------------------------------------------------------------------
+    # Remembering the tuning
+    # ------------------------------------------------------------------
+
+    def _restore_tuning(self) -> None:
+        """Put the controls back where the last session left them, if it left them anywhere.
+
+        Applied control by control rather than wholesale, because a stored region or preset
+        that no longer exists must not take the centre frequency down with it.
+        """
+        if self._store is None:
+            return
+        tuning = SigintTuning.load(self._store)
+        if tuning is None:
+            return
+        self._center.setValue(tuning.centre_mhz)
+        self._rate.setValue(tuning.rate_msps)
+        self._gain.setValue(tuning.gain_db)
+        if tuning.region:
+            index = self._region.findText(tuning.region)
+            if index >= 0:
+                self._region.setCurrentIndex(index)
+        if tuning.preset:
+            index = self._preset.findText(tuning.preset)
+            if index >= 0:
+                self._preset.setCurrentIndex(index)
+        log.debug("Restored SIGINT tuning: %s", tuning.describe())
+
+    def _remember_tuning(self) -> None:
+        """Store what is on the controls now. Called when a capture starts, not per keystroke."""
+        if self._store is None:
+            return
+        SigintTuning(
+            centre_mhz=self._center.value(),
+            rate_msps=self._rate.value(),
+            gain_db=self._gain.value(),
+            region=self._region.currentText(),
+            preset=self._preset.currentText(),
+        ).save(self._store)
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
@@ -663,6 +708,7 @@ class SigintPage(QWidget):
         # A new capture means a new centre and span, so the accumulated history describes a
         # different part of the band and must not be carried over.
         self._analysis.configure(center_hz, rate_hz, bins)
+        self._remember_tuning()
         self._refresh_availability()
 
     def _on_capture_stopped(self, message: str) -> None:
