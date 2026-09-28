@@ -289,6 +289,44 @@ firmware's own default `192.168.2.1` (which the services bind to) alongside a DH
 a reboot with the cable present. **Until that is resolved the fast path cannot be used, and every
 throughput figure above is a USB-gadget figure.**
 
+**Dropped samples and behaviour above 10 MSPS — now measured** (2026-09-27, `ip:` transport). There
+is no drop counter in the toolchain, so this uses the phase-continuity method the firmware project
+documents: a tone is injected by the AD9361's **BIST** (digitally into RX — no RF, nothing
+transmitted), the DC bins are blanked before the tone search, the tone must clear 30 dB above the
+floor, and a detector that trips on more than a fifth of blocks reports **inconclusive** rather than
+"broken".
+
+| Rate | Wall for 1 s of samples | Delivered | Phase jumps | Verdict |
+|---|---|---|---|---|
+| 3 MSPS | 1.31 s | 9.2 MB/s | **0** | continuous |
+| 5 MSPS | 1.30 s | 15.3 MB/s | **0** | continuous |
+| 10 MSPS | 1.82 s | 22.0 MB/s | 4 | **discontinuous — samples dropped** |
+| 15 MSPS | 2.57 s | 23.4 MB/s | 7 | discontinuous |
+| 20 MSPS | 3.34 s | 24.0 MB/s | 17 | discontinuous |
+| 30 MSPS | 4.78 s | 25.1 MB/s | 19 | discontinuous |
+| 40 MSPS | 6.37 s | 25.1 MB/s | 27 | discontinuous |
+
+Read correctly:
+
+- **3 and 5 MSPS are provably clean** — zero phase steps across 3,000 and 5,000 blocks. The ~0.3 s
+  beyond one second is fixed context/buffer start-up, not lost data, which the 60 s soak independently
+  confirms (60.45 s for 60 s).
+- **At 10 MSPS and above the DMA genuinely overflows and samples are discarded** — the first real
+  drops appear at 10 MSPS and rise with rate.
+- **Delivery plateaus at ~25 MB/s no matter what rate is asked for**, which is the USB-gadget link
+  ceiling. Above roughly 5–7 MSPS the radio outruns the link and the surplus is thrown away.
+- **`ip:` survives 40 MSPS without wedging** — the board was still fully present afterwards. That is
+  the useful contrast with `usb:`, which died at far lower rates.
+
+So the Pluto's honest working envelope on this host today is **≤5 MSPS with no loss**, with **~25 MB/s**
+as the hard delivery ceiling. Gigabit Ethernet, were it reachable, is what would raise it: the
+firmware project measures ~40 MB/s for receive alone over Ethernet.
+
+**`pseudorandom_err_check`** exists on the DMA device but is a *test* facility rather than a passive
+counter: idle it reports `CH0..CH3 : PN9 : Out of Sync : PN Error`, which only means no PN9 pattern is
+being fed. It would need BIST in a pseudorandom mode to mean anything, so the phase-continuity method
+above is the one to rely on.
+
 **Design cautions carried forward:** the ADI Windows USB driver installer is v0.9 (Win8.1-era
 signed INFs); libiio has an **0.x → 1.0 ABI break** and this machine has **0.26**; prefer the
 `ip:` transport; and **isolate libiio in a helper process**, because this device has already
@@ -455,8 +493,9 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | Simultaneous capture on both dongles | **Not yet done** | blocked by SIGINT's capture/scan exclusion |
 | Multi-radio Meshtastic | **Not possible today** | radios are mutually exclusive by construction |
 | Pluto clone: identity, dual transport, 2RX/2TX, drivers | **Verified** | `iio_info -s` + `iio_attr` dumps; FISH Ball Z7020/AD9361, fw `95aad-dirty`, serial over both URIs |
-| Pluto clone: host link ceiling | **Measured** | 5 MSPS sustained 60 s at 1.007× real time (19.9 MB/s); 25–30 MB/s peak; 10 MSPS link-limited |
+| Pluto clone: host link ceiling | **Measured** | delivery plateaus at ~25 MB/s whatever rate is asked; 5 MSPS sustained 60 s at 1.007× real time |
 | Pluto clone: `usb:` transport stability | **Failed twice** | device left the bus on both `usb:` runs; RNDIS `ip:` survived an identical ladder *and* a 60 s soak |
 | Pluto clone: retune latency | **Measured** | 51 ms cold, ~33 ms steady state, read-back confirmed |
-| Pluto clone: dropped-sample counting | **Not measured** | nothing in the toolchain reports it directly; needs an on-board counter read over SSH |
+| Pluto clone: dropped samples | **Measured** | 0 phase jumps at 3 and 5 MSPS; 4 at 10 MSPS rising to 27 at 40 MSPS — the DMA overflows above ~5 MSPS over USB |
+| Pluto clone: behaviour above 10 MSPS | **Measured** | no wedge to 40 MSPS over `ip:`, but samples are discarded; delivery plateaus ~25 MB/s |
 | Pluto clone: Ethernet path | **Not usable yet** | answers ICMP at 192.168.1.202; ports 22/80/30431 closed there, all open on the gadget address |
