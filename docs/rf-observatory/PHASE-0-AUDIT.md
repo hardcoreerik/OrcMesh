@@ -270,8 +270,24 @@ values*, one line per matching channel, **input first then output**. A naive "la
 reports the TX side and makes a successful RX rate change look like it never happened — which is
 exactly the error the first attempt made, and it is why the failing rate change looked ineffective.
 
-**Neither benchmark is a sustained soak.** Both were interrupted — the first after one read, the
-second after the device wedged mid-ladder — so long-duration stability remains unmeasured.
+**Sustained soak — PASSED** (2026-09-27, `ip:` transport only, after reseating). 5 MSPS for 60 s
+(1.2 GB) completed in **60.45 s wall — 1.007× real time at 19.9 MB/s** — and the device was still
+readable afterwards with both contexts present. So the USB-gadget `ip:` path **sustains 5 MSPS
+continuously**, which is enough to watch a 2 MHz LoRa window with headroom. The `usb:` transport has
+never survived an equivalent load.
+
+**Retune latency (RX_LO, `ip:` transport):** first write 51.4 ms (cold), then **32.9 ms and 32.5 ms**
+steady state, each confirmed by read-back. Fast enough for scheduled survey hopping; **not** fast
+enough for gap-free retune-scanning of a whole band.
+
+**Ethernet: attached, but not yet usable.** With the cable in, the board's LAN interface answers
+**ICMP at 192.168.1.202** and its MAC (`58-d9-d5-1d-f0-47`) appears on the host's LAN adapter — but
+**SSH (22), HTTP (80) and the IIO port (30431) are all closed there**, while all three are open on the
+USB-gadget address. The board is on the network but its services are not bound to the Ethernet
+address, and libiio's scan still lists only `192.168.2.1`. Most likely the interface carries the
+firmware's own default `192.168.2.1` (which the services bind to) alongside a DHCP lease, or it needs
+a reboot with the cable present. **Until that is resolved the fast path cannot be used, and every
+throughput figure above is a USB-gadget figure.**
 
 **Design cautions carried forward:** the ADI Windows USB driver installer is v0.9 (Win8.1-era
 signed INFs); libiio has an **0.x → 1.0 ABI break** and this machine has **0.26**; prefer the
@@ -439,6 +455,8 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | Simultaneous capture on both dongles | **Not yet done** | blocked by SIGINT's capture/scan exclusion |
 | Multi-radio Meshtastic | **Not possible today** | radios are mutually exclusive by construction |
 | Pluto clone: identity, dual transport, 2RX/2TX, drivers | **Verified** | `iio_info -s` + `iio_attr` dumps; FISH Ball Z7020/AD9361, fw `95aad-dirty`, serial over both URIs |
-| Pluto clone: host link ceiling | **Measured (short reads)** | 25–30 MB/s over both transports; 5 MSPS near real time, 10 MSPS link-limited |
-| Pluto clone: `usb:` transport stability | **Failed twice** | device left the bus on both `usb:` runs; RNDIS `ip:` survived an identical ladder |
-| Pluto clone: sustained soak, retune latency, dropped samples | **Not measured** | both attempts were interrupted before a soak |
+| Pluto clone: host link ceiling | **Measured** | 5 MSPS sustained 60 s at 1.007× real time (19.9 MB/s); 25–30 MB/s peak; 10 MSPS link-limited |
+| Pluto clone: `usb:` transport stability | **Failed twice** | device left the bus on both `usb:` runs; RNDIS `ip:` survived an identical ladder *and* a 60 s soak |
+| Pluto clone: retune latency | **Measured** | 51 ms cold, ~33 ms steady state, read-back confirmed |
+| Pluto clone: dropped-sample counting | **Not measured** | nothing in the toolchain reports it directly; needs an on-board counter read over SSH |
+| Pluto clone: Ethernet path | **Not usable yet** | answers ICMP at 192.168.1.202; ports 22/80/30431 closed there, all open on the gadget address |
