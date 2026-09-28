@@ -155,6 +155,29 @@ with **no coalescing and no drop counter**. Everything else is fixed-size (`_MAX
 widget histories of 300 rows, `BandAccumulator` fixed to sweep geometry). The brief's requirement
 to *display* degradation is currently impossible — nothing counts drops.
 
+**Counted, as of the health increment.** `SdrWorker` now keeps `received_bytes`, `rows` and the
+time of the first delivered bytes, and reports a `CaptureHealth` about once a second plus a final
+one at the end. It is arithmetic on quantities the loop owns, not a parsed diagnostic, for a
+measured reason: `rtl_sdr` was given a real overrun (an unread stdout) and **said nothing** —
+zero bytes in six seconds and no overrun line, because an unread pipe stalls the tool rather than
+producing a message. There is no wording there worth depending on.
+
+The two figures are deliberately not merged even though on this pipeline they are one measurement
+in two units (the loop blocks on the pipe, so being behind *is* being short):
+
+- **lag** — how stale the display is, in seconds. Answers "is the waterfall trailing the air".
+- **shortfall** — samples not in hand. Some can still be in the driver's buffers (~3.8 MB, about
+  0.8 s at 2.4 MSPS), so a shortfall is not proof of loss, and nothing here pretends to tell loss
+  from queueing. That needs a buffer depth the tool's output does not contain.
+
+Verified not to cry wolf: three real captures (5 s at 2.048 MS/s, 5 s at 2.4 MS/s, 20 s at
+2.4 MS/s) all reported **lag 0 ms and 0.000% shortfall** with 224/260/1364 rows. The
+`effective_rate_hz` figure reads **+0.87% / +0.47% / +0.21%** high across those three, shrinking
+with duration — a window offset, not the hardware, since 2,405,133 S/s would be ~2,140 ppm of
+crystal error, some forty times what a dongle's crystal does. The split between the read-timestamp
+offset and the pipe buffer is **UNKNOWN**; the figure is documented as good to a percent and not
+a calibrated frequency measurement.
+
 ---
 
 ## 7. Packet deduplication behaviour
@@ -642,3 +665,6 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | Child reaping: tracked child | **Verified on hardware** | `rtl_power` (pid 32672) running and holding a dongle, parent exited, **no surviving process**, next launch enumerated both dongles |
 | Child reaping: untracked control | **Verified on hardware** | same child via plain `Popen` **survived** the parent and made the next launch read `2 dongle(s) found: , , SN: ÿ` |
 | Child reaping, hard kill | **Not covered** | `atexit` does not run on a Task Manager kill; a Job Object is needed and is not claimed |
+| Capture health on real hardware | **Verified, no false alarm** | 5 s @ 2.048 MS/s, 5 s @ 2.4 MS/s, 20 s @ 2.4 MS/s: all **lag 0 ms, 0.000% shortfall**, 224/260/1364 rows |
+| `effective_rate_hz` accuracy | **Measured, and biased high** | +0.87% / +0.47% / +0.21% over those runs; shrinks with duration, so a window offset rather than the hardware |
+| `rtl_sdr` overrun reporting | **Absent** | an unread stdout stalls it: 0 bytes in 6 s and no overrun line on stderr, so loss cannot be parsed from its output |

@@ -95,6 +95,29 @@ class _StreamThatStops:
         self.closed = True
 
 
+class _OneChunkThenEOF:
+    """A stdout that delivers one full read and then ends.
+
+    The shipped doubles all end immediately, which never gives the capture loop the
+    bytes it needs to say anything about itself.
+    """
+
+    closed = False
+
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+        self._delivered = False
+
+    def read(self, count: int) -> bytes:
+        if self._delivered:
+            return b""
+        self._delivered = True
+        return self._payload
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class TestIqConversion:
     def test_a_tone_lands_on_the_bin_it_belongs_to(self):
         """A +fs/4 tone must land three quarters of the way across the row.

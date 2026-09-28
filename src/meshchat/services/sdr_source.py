@@ -12,8 +12,10 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
+import time
 from collections import deque
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
@@ -139,6 +141,124 @@ def iq_to_power_row(raw: bytes) -> np.ndarray | None:
     return _repair_dc_bins(10.0 * np.log10(power + 1e-12)).astype(np.float32)
 
 
+#: How often the capture reports on itself. Once a second is fast enough to notice a
+#: waterfall starting to trail, and slow enough that the signal is not itself load.
+_HEALTH_INTERVAL_S = 1.0
+
+#: A quarter second of lag is not arbitrary: one row here covers 32768 samples, which is
+#: 13.7 ms at 2.4 MSPS, so a quarter second is about eighteen rows of slack — enough to
+#: absorb a scheduling hiccup on a busy desktop without the waterfall visibly trailing
+#: what is on the air.
+LAG_TOLERANCE_S = 0.25
+
+
+@dataclass(frozen=True)
+class CaptureHealth:
+    """What a capture can honestly say about its own condition.
+
+    Two figures, and the honest thing is to say that on this pipeline they are two
+    views of **one** measurement rather than two independent discoveries. The loop
+    blocks on the pipe, so whenever it is behind the wall clock it is also short of
+    samples; `lag_s` is that shortfall in seconds and `shortfall_samples` is the same
+    shortfall in data. They are both kept because they answer different questions:
+
+    * **lag** — how stale the display is. A waterfall can be perfectly lossless and
+      still be a second behind, which is what a slow consumer looks like.
+    * **shortfall** — how many samples are not in hand. Some of it can still be sitting
+      in the driver's own buffers (the RTL driver holds roughly 3.8 MB, about 0.8 s at
+      2.4 MSPS), so a shortfall is not by itself proof of loss — but a shortfall that
+      keeps growing past any buffer is. Nothing here pretends to tell those apart,
+      because the buffer depth is not knowable from the tool's output.
+
+    Measured by arithmetic on quantities the loop owns — bytes delivered against the
+    sample rate and elapsed time — rather than by parsing a diagnostic. rtl_sdr was
+    given a real overrun and said nothing about it: an unread stdout stalls it
+    entirely (measured: zero bytes in six seconds, no overrun line), so there is no
+    wording here worth depending on.
+    """
+
+    received_samples: int
+    expected_samples: int
+    elapsed_s: float
+    lag_s: float
+    rows: int
+
+    @property
+    def shortfall_samples(self) -> int:
+        return max(0, self.expected_samples - self.received_samples)
+
+    @property
+    def shortfall_percent(self) -> float:
+        if self.expected_samples <= 0:
+            return 0.0
+        return 100.0 * self.shortfall_samples / self.expected_samples
+
+    @property
+    def effective_rate_hz(self) -> float:
+        """What actually arrived per second — the rate the view is really showing.
+
+        Reads a little high, and the size of that is measured rather than assumed:
+        +0.87% over 5 s at 2.048 MS/s, +0.47% over 5 s at 2.4 MS/s, +0.21% over 20 s
+        at 2.4 MS/s. It shrinks as the capture lengthens, so it is an offset in the
+        window and not the hardware: 2,405,133 S/s would be about 2,140 ppm of crystal
+        error, some forty times what a dongle's crystal does. The clock starts when the
+        first 64 KB read returns, by which point the pipeline is already filling, so the
+        window is a little shorter than the data it counts. The split between that and
+        the pipe buffer is unknown.
+
+        Good enough to answer "is this capture keeping up", and to budget within a
+        percent. Not a calibrated frequency measurement, and the two figures that are
+        exact — lag and shortfall — are the ones the health verdict uses.
+        """
+        return self.received_samples / self.elapsed_s if self.elapsed_s > 0 else 0.0
+
+    @property
+    def is_keeping_up(self) -> bool:
+        """Whether the display is close enough behind to still call it live."""
+        return self.lag_s <= LAG_TOLERANCE_S
+
+    def describe(self) -> str:
+        """One line, as the numbers actually stand.
+
+        Says "keeping up" rather than "lossless", because nothing here can prove the
+        second one: a capture that never falls behind has not demonstrated the absence
+        of a driver drop in a buffered window.
+        """
+        if self.is_keeping_up and self.shortfall_percent < 1.0:
+            return f"keeping up · {self.effective_rate_hz / 1e6:.2f} MS/s · {self.rows} rows"
+        return (
+            f"{self.lag_s * 1000:.0f} ms behind · {self.shortfall_samples:,} samples short "
+            f"({self.shortfall_percent:.1f}%) · {self.effective_rate_hz / 1e6:.2f} MS/s"
+        )
+
+
+def measure_capture_health(
+    *, received_bytes: int, sample_rate_hz: float, elapsed_s: float, rows: int,
+) -> CaptureHealth:
+    """Turn the counters the capture loop keeps into a `CaptureHealth`.
+
+    Pure so the arithmetic can be tested without a device, a thread or a clock.
+    """
+    received = received_bytes // 2
+    expected = int(max(0.0, elapsed_s) * sample_rate_hz)
+    if sample_rate_hz > 0:
+        # Clamped at zero because a negative lag is not a condition the hardware can
+        # be in; it would only mean the clock was read before the byte count.
+        lag = max(0.0, elapsed_s - received / sample_rate_hz)
+    else:
+        # No rate means no way to place what arrived on the time axis, so there is no
+        # lag to report. Deriving one from a zero rate would be dividing by nothing and
+        # would mark every capture whose rate is not yet known as permanently behind.
+        lag = 0.0
+    return CaptureHealth(
+        received_samples=received,
+        expected_samples=expected,
+        elapsed_s=max(0.0, elapsed_s),
+        lag_s=lag,
+        rows=rows,
+    )
+
+
 def replay_rows(
     path: Path,
     *,
@@ -167,6 +287,7 @@ class SdrWorker(QObject):
     error = Signal(str)
     recording_finished = Signal(object)  # iq_recorder.CaptureInfo
     recording_failed = Signal(str)
+    health = Signal(object)              # CaptureHealth, about once a second
 
     def __init__(self, parent=None, *, label: str = "the spectrum view"):
         super().__init__(parent)
@@ -184,6 +305,14 @@ class SdrWorker(QObject):
         self._stderr_lock = threading.Lock()
         self._stderr_thread: threading.Thread | None = None
         self._recorder: IqRecorder | None = None
+        #: Counters behind `capture_health()`. They exist because the brief's "1.4 s
+        #: behind, 312 frames dropped" display was impossible without them: `row_ready`
+        #: is an unbounded queued signal, so nothing was counting anything.
+        self._sample_rate = 0.0
+        self._received_bytes = 0
+        self._rows = 0
+        self._first_data_at: float | None = None
+        self._last_health_at = 0.0
         #: Set by arm_recording(); the recorder itself is created in start(),
         #: because only then are the centre frequency and rate it must record
         #: into its metadata actually known.
@@ -267,6 +396,7 @@ class SdrWorker(QObject):
 
         self._open_recorder(center_hz, sample_rate_hz, gain_db)
 
+        self._reset_health(sample_rate_hz)
         self._running = True
         self.started.emit(center_hz, sample_rate_hz, FFT_BINS)
         self._capture_loop()
@@ -343,6 +473,49 @@ class SdrWorker(QObject):
     def is_recording(self) -> bool:
         return self._recorder is not None
 
+    def _reset_health(self, sample_rate_hz: float) -> None:
+        self._sample_rate = sample_rate_hz
+        self._received_bytes = 0
+        self._rows = 0
+        self._first_data_at = None
+        # Set to now rather than left at zero, so the first periodic report comes a
+        # full interval in. Left at zero it fires on the very first row, when elapsed
+        # time is a few milliseconds and every figure it prints is meaningless.
+        self._last_health_at = time.monotonic()
+
+    def _note_progress(self, byte_count: int) -> None:
+        """Count what has arrived, starting the clock on the first bytes.
+
+        The clock starts at the first data rather than at start(), so the driver's own
+        start-up latency is not charged to the capture as permanent lag — measured at
+        about 3.25 s for rtl_sdr, it would otherwise show as a fixed offset that never
+        goes away and would make every capture look permanently behind.
+        """
+        self._received_bytes += byte_count
+        if self._first_data_at is None:
+            self._first_data_at = time.monotonic()
+
+    def capture_health(self) -> CaptureHealth | None:
+        """The capture's condition, or None before any samples have arrived."""
+        if self._first_data_at is None or self._sample_rate <= 0:
+            return None
+        return measure_capture_health(
+            received_bytes=self._received_bytes,
+            sample_rate_hz=self._sample_rate,
+            elapsed_s=time.monotonic() - self._first_data_at,
+            rows=self._rows,
+        )
+
+    def _report_health(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self._last_health_at < _HEALTH_INTERVAL_S:
+            return
+        health = self.capture_health()
+        if health is None:
+            return
+        self._last_health_at = now
+        self.health.emit(health)
+
     def _drain_stderr(self, stream: IO[bytes] | None) -> None:
         if stream is None:
             return
@@ -368,11 +541,17 @@ class SdrWorker(QObject):
             raw = proc.stdout.read(_READ_SAMPLES * 2)
             if not raw:
                 break
+            self._note_progress(len(raw))
             self._tee(raw)
             row = iq_to_power_row(raw)
             if row is not None:
+                self._rows += 1
                 self.row_ready.emit(row)
+            self._report_health()
 
+        # A final figure, so a capture that ended badly reports what it managed
+        # rather than leaving the last healthy reading standing.
+        self._report_health(force=True)
         # Two things make an exit normal, and both have to be checked. A
         # stop() clears `_running` before taking the process down; but rtl_sdr
         # also exits by itself with status 0 (it reports "User cancel" and
