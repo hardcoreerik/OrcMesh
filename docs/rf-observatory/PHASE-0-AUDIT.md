@@ -240,15 +240,38 @@ Two consequences that change the plan:
   stops helping. Their own capture command is
   `iio_readdev -u ip:fishball.local -b 1048576 -s 33554432 cf-ad9361-lpc voltage0 voltage1`.
 
-**First benchmark attempt — inconclusive, and it dropped the device.** An `iio_readdev` sweep at
-`-b 32768` across 2.08–61.44 MSPS produced one successful read (2.083 M samples ≈ 8.3 MB in
-0.56 s ≈ 15 MB/s — the right order of magnitude for the USB-gadget ceiling, but not a controlled
-measurement, and the requested rate did not take effect), after which every later call failed
-with `Failed to reset pipes: Broken pipe (32)` and the board then **left the USB bus entirely**
-(`No such device (19)`, RNDIS adapter gone, ping fails). Pushing 30.72 MSPS through a ~1.7 MS/s
-link and a hiccup in the clone's dirty firmware are **both still candidates**; they are not yet
-separated. The board needs a physical replug, and any retry must use a large buffer and a rate the
-link can actually carry.
+**Measured on this machine (2026-09-27, after reseating; 2 s reads, `-b 1048576`, one complex RX
+stream, `cf-ad9361-lpc voltage0 voltage1`):**
+
+| Transport | Rate asked | Rate taken | Wall for 2 s of samples | Delivered (MB/s) | Verdict |
+|---|---|---|---|---|---|
+| `ip:` (RNDIS) | 0.5 MSPS | **30.72 MSPS** (rejected) | 10.0 s | 24.5 | link-limited |
+| `ip:` | 2.083 MSPS | **30.72 MSPS** (rejected) | 9.5 s | 25.9 | link-limited |
+| `ip:` | 3 MSPS | 3 MSPS | 2.35 s | 10.2 | ~real time |
+| `ip:` | 5 MSPS | 5 MSPS | 2.36 s | 16.9 | ~real time |
+| `ip:` | 10 MSPS | 10 MSPS | 3.42 s | 23.4 | link-limited (1.7×) |
+| `usb:` (libiio USB) | 0.5 / 2.083 MSPS | 30.72 MSPS | ~8.1 s | 30.3 | link-limited, **then wedged** |
+
+Three findings, all of which shape the backend:
+
+1. **The `usb:` transport is the unstable one.** The board has now wedged and left the bus twice,
+   and both times the failing run was over `usb:` — the first incident above was also `usb:`. The
+   RNDIS `ip:` transport survived an identical rate ladder including 10 MSPS. So **prefer `ip:` and
+   treat the Windows libiio USB backend as unreliable with this board.**
+2. **The host link ceiling is roughly 25–30 MB/s ≈ 6–7.5 MSPS of complex samples**, nowhere near
+   the 20 MHz the brief assumes. 5 MSPS runs close to real time; 10 MSPS does not.
+3. **Rates below about 3 MSPS are silently rejected and the device keeps its previous setting.**
+   Asking for 2,083,333 — the exact minimum `sampling_frequency_available` advertises — left the
+   device at 30.72 MSPS. That advertised minimum is therefore misleading for this firmware, and the
+   practical floor lies somewhere between 2.083 and 3 MSPS (not yet bisected).
+
+**Parsing note for anyone driving `iio_attr`:** with a specific attribute named it prints *bare
+values*, one line per matching channel, **input first then output**. A naive "last value" read
+reports the TX side and makes a successful RX rate change look like it never happened — which is
+exactly the error the first attempt made, and it is why the failing rate change looked ineffective.
+
+**Neither benchmark is a sustained soak.** Both were interrupted — the first after one read, the
+second after the device wedged mid-ladder — so long-duration stability remains unmeasured.
 
 **Design cautions carried forward:** the ADI Windows USB driver installer is v0.9 (Win8.1-era
 signed INFs); libiio has an **0.x → 1.0 ABI break** and this machine has **0.26**; prefer the
@@ -416,4 +439,6 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | Simultaneous capture on both dongles | **Not yet done** | blocked by SIGINT's capture/scan exclusion |
 | Multi-radio Meshtastic | **Not possible today** | radios are mutually exclusive by construction |
 | Pluto clone: identity, dual transport, 2RX/2TX, drivers | **Verified** | `iio_info -s` + `iio_attr` dumps; FISH Ball Z7020/AD9361, fw `95aad-dirty`, serial over both URIs |
-| Pluto clone: sustained streaming throughput | **Not verified** | dropped off the USB bus after one uncontrolled read; firmware project reports ~1.7 MS/s over the USB gadget vs 49.8 MS/s on-board |
+| Pluto clone: host link ceiling | **Measured (short reads)** | 25–30 MB/s over both transports; 5 MSPS near real time, 10 MSPS link-limited |
+| Pluto clone: `usb:` transport stability | **Failed twice** | device left the bus on both `usb:` runs; RNDIS `ip:` survived an identical ladder |
+| Pluto clone: sustained soak, retune latency, dropped samples | **Not measured** | both attempts were interrupted before a soak |
