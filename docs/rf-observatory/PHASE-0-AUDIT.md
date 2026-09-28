@@ -305,6 +305,7 @@ floor, and a detector that trips on more than a fifth of blocks reports **inconc
 | 20 MSPS | 3.34 s | 24.0 MB/s | 17 | discontinuous |
 | 30 MSPS | 4.78 s | 25.1 MB/s | 19 | discontinuous |
 | 40 MSPS | 6.37 s | 25.1 MB/s | 27 | discontinuous |
+| **61.44 MSPS** (the converter's own spec maximum) | 9.51 s | 25.8 MB/s | 53 | discontinuous |
 
 Read correctly:
 
@@ -318,9 +319,27 @@ Read correctly:
 - **`ip:` survives 40 MSPS without wedging** — the board was still fully present afterwards. That is
   the useful contrast with `usb:`, which died at far lower rates.
 
+- **The link, not the radio, is the limit, and the number is identical at every rate.** 61.44 MSPS —
+  the converter's spec maximum — was **accepted and run**: 1 s of samples demands 246 MB, the capture
+  took 9.51 s, and 246 ÷ 25.8 MB/s = 9.53 s. Delivery sat at ~25–26 MB/s from 10 MSPS all the way to
+  61.44. So the radio produced every sample and the link discarded roughly three quarters of them.
+
 So the Pluto's honest working envelope on this host today is **≤5 MSPS with no loss**, with **~25 MB/s**
-as the hard delivery ceiling. Gigabit Ethernet, were it reachable, is what would raise it: the
-firmware project measures ~40 MB/s for receive alone over Ethernet.
+as the hard delivery ceiling — which is USB 2.0, not the AD9361. The published specifications
+(70 MHz–6 GHz, 61.44 MS/s, 2RX/2TX) describe **the radio**, and the radio meets them: the firmware
+project measures **49.8 MS/s sustained for one channel** with the capture running *on the board*,
+where no link is involved. What no host link can do is carry 61.44 MSPS of one channel — that needs
+246 MB/s against gigabit's 125 MB/s — which is why the vendor's own table tops out at 31.25 MS/s over
+ gigabit and ~10 MSPS clean in practice. Their documentation says it plainly: *"What you will
+actually get is set by the link to your host, not by the board."*
+
+**Design consequence for wideband work.** Streaming raw IQ cannot deliver wideband coverage on this
+hardware — not at ~6 MSPS over USB, and not at ~10 MSPS over Ethernet. The only route to genuine
+wideband detection is to **decimate or detect in the FPGA fabric and send only events across the
+link**, which the board is built for (dual ARM plus Z7020 fabric; the vendor documents an FM
+channelizer and notes that "filtering or decimating in the fabric means fewer bytes ever need to
+cross"). Their HDL is GPL-2.0, so it stays a separate artifact and is never vendored into GPL-3.0
+OrcMesh.
 
 **`pseudorandom_err_check`** exists on the DMA device but is a *test* facility rather than a passive
 counter: idle it reports `CH0..CH3 : PN9 : Out of Sync : PN Error`, which only means no PN9 pattern is
