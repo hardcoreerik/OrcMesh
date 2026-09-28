@@ -280,21 +280,49 @@ never survived an equivalent load.
 steady state, each confirmed by read-back. Fast enough for scheduled survey hopping; **not** fast
 enough for gap-free retune-scanning of a whole band.
 
-**Ethernet: attached, but not yet usable.** With the cable in, the board's LAN interface answers
-**ICMP at 192.168.1.202** and its MAC (`58-d9-d5-1d-f0-47`) appears on the host's LAN adapter — but
-**SSH (22), HTTP (80) and the IIO port (30431) are all closed there**, while all three are open on the
-USB-gadget address. The board is on the network but its services are not bound to the Ethernet
-address, and libiio's scan still lists only `192.168.2.1`. Most likely the interface carries the
-firmware's own default `192.168.2.1` (which the services bind to) alongside a DHCP lease, or it needs
-**A power cycle with the cable attached does not change this** (tested 2026-09-27: the board rebooted —
-its USB address moved `1.62.5` → `1.64.5` — and the LAN behaviour was identical), so it is a
-configuration state rather than boot timing. The board's `eth0` holds **both `192.168.2.1` and
-`192.168.1.202`**, appearing in the host's neighbour table under a single MAC (`58-d9-d5-1d-f0-47`), while
-the USB gadget carries the same `192.168.2.1` under a different MAC (`00-05-f7-19-e7-93`). That points at
-the services being bound to `192.168.2.1`, which the host reaches over the **gadget** route — so OrcMesh
-has been talking to the USB gadget all along, and the Ethernet interface's copy of that address is not
-reachable without an explicit host route. Confirming it needs the board's own view (`ip -brief addr`,
-`ss -lnt`) over the gadget SSH, which requires the root password.
+**Ethernet: RESOLVED — and it is the fast path.** The board's `eth0` was on **DHCP** (the documented
+default; `ipaddr_eth` blank in the config it serves on its USB drive). DHCP is not wrong, but it meant
+the address **churned between boots**, so every address probed — `192.168.1.202` included — was a stale
+lease from an earlier boot. The services were never unreachable; we were knocking on an address the
+board had already left. The vendor's own documentation warns about exactly this: *"A fresh random MAC
+every boot means the router sees a new device each time, hands out a new lease, and a DHCP reservation is
+impossible."*
+
+Diagnosing needed **no password at all**: the board exposes a **USB drive** (`PlutoSDR`, 30 MB) holding
+`config.txt`, generated from its live environment. That is where the blank `ipaddr_eth` and
+`hostname = pluto` were read from — the latter also explains why `ip:fishball.local` never resolved:
+the default hostname is `pluto`, and patch `0013` is what renames it to `fishball`.
+
+Fixed by pinning a **static** `ipaddr_eth = 192.168.1.50` through the vendor's own no-terminal route
+(edit `config.txt`, set `reset = 1`, eject). It is safe by construction: `ipaddr_eth` only touches
+`eth0`, and the docs are explicit that *"the USB interface keeps its own static address no matter what
+you did to Ethernet, so a USB cable is always the way back in."* The regenerated `config.txt` now reads
+`ipaddr_eth = 192.168.1.50` with `reset = 0` — the request was consumed.
+
+**Ethernet throughput — the payoff** (same BIST-tone drop method, `ip:192.168.1.50`, 1 s captures):
+
+| Rate | Wall for 1 s | Delivered | Phase jumps | Verdict |
+|---|---|---|---|---|
+| 5 MSPS | 1.22 s | 16.3 MB/s | **0** | continuous |
+| 10 MSPS | 1.21 s | 32.9 MB/s | **0** | continuous |
+| **15 MSPS** | 1.21 s | **49.5 MB/s** | **0** | **continuous** |
+| 20 MSPS | 1.57 s | 50.9 MB/s | 11 | discontinuous |
+| 30 MSPS | 2.23 s | 53.8 MB/s | 23 | discontinuous |
+| 40 MSPS | 2.82 s | 56.8 MB/s | 29 | discontinuous |
+
+**And it sustains:** 10 MSPS for 60 s (2400 MB) completed in **60.25 s — 1.004× real time at
+39.8 MB/s**, with the board healthy afterwards.
+
+So the lossless envelope is **15 MSPS, a 3× gain over the 5 MSPS available on USB** — and notably
+**not the 2× this audit previously predicted**. Peak delivery roughly doubles, from ~25 to ~57 MB/s.
+15 MSPS is ±7.5 MHz, i.e. **more than half of the 26 MHz US allocation in one look**, and it also
+exceeds the vendor's own reference figure of ~40 MB/s for receive alone. It is still nowhere near the
+converter's 61.44 MSPS, and copying the whole band over any host link remains impossible — but "the
+Pluto can only do 5 MSPS" is now superseded.
+
+**Address churn also settles the identity question.** With the link up, libiio reports the **same board
+three times over** — `192.168.1.50`, `192.168.2.1` (the USB gadget) and `usb:` — every one carrying the
+same serial `b0d85d89…`. A registry keyed on URI would show three receivers and one radio.
 
 Note also that the board's port 80 serves **ADI's stock static Pluto web page**: it contains the vendor's
 own tutorial text (a developer's shell prompt, `rgetz@brain`), so its "kernel 4.9.0 … 2018" line is
@@ -572,9 +600,9 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | Simultaneous capture on both dongles | **Not yet done** | blocked by SIGINT's capture/scan exclusion |
 | Multi-radio Meshtastic | **Not possible today** | radios are mutually exclusive by construction |
 | Pluto clone: identity, dual transport, 2RX/2TX, drivers | **Verified** | `iio_info -s` + `iio_attr` dumps; FISH Ball Z7020/AD9361, fw `95aad-dirty`, serial over both URIs |
-| Pluto clone: host link ceiling | **Measured** | delivery plateaus at ~25 MB/s whatever rate is asked; 5 MSPS sustained 60 s at 1.007× real time |
-| Pluto clone: `usb:` transport stability | **Failed twice** | device left the bus on both `usb:` runs; RNDIS `ip:` survived an identical ladder *and* a 60 s soak |
+| Pluto clone: USB link ceiling | **Measured** | ~25 MB/s whatever rate is asked; 5 MSPS sustained 60 s at 1.007× real time |
+| Pluto clone: Ethernet link ceiling | **Measured** | **15 MSPS lossless, ~57 MB/s peak; 10 MSPS sustained 60 s at 1.004× real time (39.8 MB/s)** |
+| Pluto clone: `usb:` transport stability | **Failed twice** | device left the bus on both `usb:` runs; the `ip:` transports survived identical ladders *and* 60 s soaks |
 | Pluto clone: retune latency | **Measured** | 51 ms cold, ~33 ms steady state, read-back confirmed |
-| Pluto clone: dropped samples | **Measured** | 0 phase jumps at 3 and 5 MSPS; 4 at 10 MSPS rising to 27 at 40 MSPS — the DMA overflows above ~5 MSPS over USB |
-| Pluto clone: behaviour above 10 MSPS | **Measured** | no wedge to 40 MSPS over `ip:`, but samples are discarded; delivery plateaus ~25 MB/s |
-| Pluto clone: Ethernet path | **Not usable yet** | answers ICMP at 192.168.1.202; ports 22/80/30431 closed there, all open on the gadget address |
+| Pluto clone: dropped samples | **Measured** | USB: 0 jumps at 3 and 5 MSPS, 4 at 10 rising to 27 at 40. Ethernet: 0 at 5, 10 and 15 MSPS, first drops at 20 |
+| Pluto clone: Ethernet path | **Working and measured** | pinned at `192.168.1.50` by a static `ipaddr_eth`; the cause was a churning DHCP address, not a service-binding fault |
