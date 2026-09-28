@@ -370,6 +370,17 @@ The decisive figure: **even USB 2.0 at its full 60 MB/s nominal with zero overhe
 15 MSPS — a quarter of the converter's 61.44 MSPS.** No amount of tuning the USB-C port changes that,
 which is precisely what the RJ45 is for.
 
+**This is normal for the Pluto family, not a clone defect.** A genuine ADALM-PLUTO is also USB 2.0 (Zynq
+Z7010 processing system) with the same 61.44 MSPS converter, and its advertised rate is not streamable
+either. If anything this board's *radio* is the better one — AD9361 (70 MHz–6 GHz, up to 56 MHz analogue
+bandwidth) against the reference design's AD9363 (325 MHz–3.8 GHz, 20 MHz). The radio is the upgrade; the
+interface is the shared constraint.
+
+**The three ways to actually get a high rate**, best first: (1) **Ethernet**, ~10 MSPS live, once the
+service is reachable; (2) **record to the board's own microSD**, 49.8 MS/s — near the radio's maximum,
+but recorded rather than live, then copied off; (3) **process in the fabric**, decimating or detecting
+on the board and sending only events, which is the only route to genuine wideband coverage.
+
 **Design cautions carried forward:** the ADI Windows USB driver installer is v0.9 (Win8.1-era
 signed INFs); libiio has an **0.x → 1.0 ABI break** and this machine has **0.26**; prefer the
 `ip:` transport; and **isolate libiio in a helper process**, because this device has already
