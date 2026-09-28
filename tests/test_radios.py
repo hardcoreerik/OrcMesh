@@ -17,10 +17,10 @@ from meshchat.services.radios import base, lease
 def _empty_leases():
     """The lease is process-wide, so no test may inherit another's holdings."""
     with lease._radio_lock:
-        lease._radio_owners.clear()
+        lease._leases.clear()
     yield
     with lease._radio_lock:
-        lease._radio_owners.clear()
+        lease._leases.clear()
 
 
 # ── Real hardware, verbatim from serial.tools.list_ports ────────────────────────
@@ -344,8 +344,116 @@ class TestLease:
         assert "2859752693" in complaint
 
 
+class TestLearningAnIdentity:
+    """A radio's identity arrives in stages, and the lease has to follow it.
+
+    It is leased under its hardware address, because that is all that is known before
+    anything is connected. The node number the mesh knows it by only appears *after*
+    connecting. If those two were separate leases, they would be two names for one radio
+    with a gap between them for a second session to walk through.
+    """
+
+    def test_learning_the_node_number_extends_the_same_lease(self):
+        radios.acquire_radio("session", "the device page", "radio:44:1B:F6:6F:81:BC")
+
+        ok, complaint = radios.add_identity(
+            "session", "radio:44:1B:F6:6F:81:BC", "radio:2859752693",
+        )
+
+        assert ok, complaint
+        assert radios.radio_owner("radio:2859752693") == "the device page"
+
+    def test_the_node_number_is_then_refused_to_everyone_else(self):
+        radios.acquire_radio("session", "the device page", "radio:44:1B:F6:6F:81:BC")
+        radios.add_identity("session", "radio:44:1B:F6:6F:81:BC", "radio:2859752693")
+
+        ok, _ = radios.acquire_radio("sigint", "the SIGINT view", "radio:2859752693")
+
+        assert not ok, "the same radio under the mesh's own name for it"
+
+    def test_releasing_by_either_name_releases_the_whole_radio(self):
+        """Otherwise the radio keeps reading as busy under a name the user never saw."""
+        radios.acquire_radio("session", "the device page", "radio:44:1B:F6:6F:81:BC")
+        radios.add_identity("session", "radio:44:1B:F6:6F:81:BC", "radio:2859752693")
+
+        radios.release_radio("session", "radio:44:1B:F6:6F:81:BC")
+
+        assert radios.radio_owner("radio:44:1B:F6:6F:81:BC") == ""
+        assert radios.radio_owner("radio:2859752693") == ""
+        ok, _ = radios.acquire_radio("anyone", "the SIGINT view", "radio:2859752693")
+        assert ok
+
+    def test_releasing_by_the_learned_name_also_releases_the_address(self):
+        radios.acquire_radio("session", "the device page", "radio:44:1B:F6:6F:81:BC")
+        radios.add_identity("session", "radio:44:1B:F6:6F:81:BC", "radio:2859752693")
+
+        radios.release_radio("session", "radio:2859752693")
+
+        assert radios.radio_owner("radio:44:1B:F6:6F:81:BC") == ""
+
+    def test_an_identity_held_by_someone_else_is_refused(self):
+        """The radio is already in another session's hands under the name just learned."""
+        radios.acquire_radio("other", "the SIGINT view", "radio:2859752693")
+        radios.acquire_radio("session", "the device page", "radio:44:1B:F6:6F:81:BC")
+
+        ok, complaint = radios.add_identity(
+            "session", "radio:44:1B:F6:6F:81:BC", "radio:2859752693",
+        )
+
+        assert not ok
+        assert "already in use by the SIGINT view" in complaint
+
+    def test_a_refused_identity_leaves_the_existing_lease_intact(self):
+        radios.acquire_radio("other", "the SIGINT view", "radio:2859752693")
+        radios.acquire_radio("session", "the device page", "radio:44:1B:F6:6F:81:BC")
+
+        radios.add_identity("session", "radio:44:1B:F6:6F:81:BC", "radio:2859752693")
+
+        assert radios.radio_owner("radio:44:1B:F6:6F:81:BC") == "the device page"
+        assert radios.radio_owner("radio:2859752693") == "the SIGINT view"
+
+    def test_an_identity_cannot_be_added_to_a_radio_this_session_does_not_hold(self):
+        ok, complaint = radios.add_identity(
+            "session", "radio:44:1B:F6:6F:81:BC", "radio:2859752693",
+        )
+
+        assert not ok
+        assert "not held by this session" in complaint
+
+    def test_learning_the_same_identity_twice_is_harmless(self):
+        """A reconnect reports the node number again."""
+        radios.acquire_radio("session", "the device page", "radio:1")
+
+        assert radios.add_identity("session", "radio:1", "radio:2859752693")[0]
+        assert radios.add_identity("session", "radio:1", "radio:2859752693")[0]
+
+        assert len(radios.held_radios()) == 2
+
+    def test_a_radio_with_two_names_counts_once_for_its_owner(self):
+        """Otherwise a session would look like it held two radios and could not take one more."""
+        radios.acquire_radio("session", "the device page", "radio:1")
+        radios.add_identity("session", "radio:1", "radio:2859752693")
+
+        assert radios.owner_radios("session") == ["radio:1"]
+
+    def test_two_radios_learned_by_name_are_two_entries_for_their_owner(self):
+        radios.acquire_radio("session", "the device page", "radio:1")
+        radios.add_identity("session", "radio:1", "radio:2859752693")
+        radios.acquire_radio("session", "the device page", "radio:2")
+        radios.add_identity("session", "radio:2", "radio:1130080812")
+
+        assert len(radios.owner_radios("session")) == 2
+
+    def test_held_radios_lists_both_names_of_one_radio(self):
+        """A diagnostics view should show every name, or a refusal looks unexplained."""
+        radios.acquire_radio("session", "the device page", "radio:1")
+        radios.add_identity("session", "radio:1", "radio:2859752693")
+
+        assert set(radios.held_radios()) == {"radio:1", "radio:2859752693"}
+
+
 class TestHoldContextManager:
-    """A lease that outlives a failed connect is the bug this prevents.
+    """A lease that outlives a failed connect, or a name that does, is the bug this prevents.
 
     The SDR side had exactly that bug and it had to be fixed by hand at each call site.
     """

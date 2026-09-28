@@ -24,6 +24,7 @@ from .base import (
 from .lease import (
     RadioBusy,
     acquire_radio,
+    add_identity,
     held_radios,
     hold,
     owner_radios,
@@ -53,6 +54,7 @@ __all__ = [
     "RadioCandidate",
     "RadioTransport",
     "acquire_radio",
+    "add_identity",
     "candidate_key",
     "candidates",
     "held_radios",

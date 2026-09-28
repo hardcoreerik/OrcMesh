@@ -150,6 +150,23 @@ normalisation), `registry.py` (enumeration and grouping, no port opened), `lease
 (per-radio ownership, plus a `hold()` context manager so a failed connect cannot leave a
 radio reading as busy — the bug that had to be fixed by hand on the SDR side).
 
+**A radio's identity arrives in stages, and the lease follows it.** It is leased under its
+hardware address, because that is all that is known before anything is connected; the node
+number the mesh knows it by only appears *after* connecting. `add_identity()` extends the
+existing lease to cover the new name, and releasing under **either** name releases the whole
+radio — otherwise it would keep reading as busy under a name the user never saw. Verified live
+against both radios: leased by address, connected, node numbers learned, four keys held for
+two radios, and a second session refused through **both** the address and the node number.
+
+Two things this does not claim. There is a **window** between acquiring and identifying during
+which only the hardware address is held — harmless for every transport on this bench, because
+the registry keys Bluetooth by its MAC family too so both doors collide on the address alone,
+but not sufficient for a transport that can only report a node number. That is exactly what
+`add_identity()` is for, and it is why the window is documented rather than glossed. And
+identity is still *hinted* from the address before connecting: `mac_family` groups two
+addresses without asking the radio, which is a shortcut for avoiding a double-open, never a
+statement about which radio this is.
+
 ---
 
 ## 5. Multi-RTL capability today — and the bugs the audit found
