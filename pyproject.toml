@@ -27,6 +27,10 @@ orcmesh = "meshchat.app:main"
 # normally without this; the Spectrum page just reports it as unavailable.
 sdr = [
     "pyrtlsdr>=0.3",
+    # True 3D waterfall surface (pyqtgraph.opengl.GLSurfacePlotItem) for the
+    # SIGINT tab. Optional even here: the tab falls back to the 2D waterfall
+    # when OpenGL is missing or the driver is broken.
+    "PyOpenGL>=3.1.7",
 ]
 dev = [
     "pytest>=8,<10",

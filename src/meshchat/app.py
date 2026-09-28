@@ -51,6 +51,10 @@ def main() -> int:
     )
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging")
     parser.add_argument(
+        "--first-run", action="store_true",
+        help="Open the setup wizard on launch, even if setup was completed before",
+    )
+    parser.add_argument(
         "--version", action="store_true",
         help="Print the OrcMesh and dependency versions and exit",
     )
@@ -88,6 +92,15 @@ def main() -> int:
     # PySide6-WebEngine requires this env var on some Windows configs
     os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu-sandbox")
 
+    # The map's QWebEngineView (Qt Quick) and the SIGINT tab's OpenGL waterfall
+    # have to agree on a composition API or the map stops rendering entirely.
+    # Measured on this machine: with Qt Quick on its default RHI backend, opening
+    # the 3D waterfall made the map report "Failed to get a QRhi from the
+    # top-level widget's window" and draw nothing; with this set, stderr is silent
+    # and both render. Setting AA_ShareOpenGLContexts instead does not help.
+    # Must be set before QApplication exists.
+    os.environ.setdefault("QSG_RHI_BACKEND", "opengl")
+
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
@@ -107,5 +120,11 @@ def main() -> int:
     from meshchat.ui.main_window import MainWindow
     window = MainWindow()
     window.show()
+
+    # After show(), so the wizard is a child of a window that is already on
+    # screen rather than of one that is about to be. The installer passes
+    # --first-run on a fresh install; otherwise this opens once ever, and the
+    # Map menu can re-open it at any time.
+    window.maybe_run_first_run(force=args.first_run)
 
     return app.exec()

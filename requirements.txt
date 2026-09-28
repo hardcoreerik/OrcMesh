@@ -11,7 +11,9 @@ pyqtgraph>=0.13
 numpy>=1.26
 esptool>=5,<6
 
-# Optional — RTL-SDR spectrum waterfall (Spectrum page).
-# Also needs the native librtlsdr driver; on Windows install the WinUSB
-# driver for the dongle with Zadig. OrcMesh runs fine without this.
+# Optional — RTL-SDR spectrum waterfall (Spectrum page) and the SIGINT tab's
+# 3D waterfall. Also needs the native librtlsdr driver; on Windows install the
+# WinUSB driver for the dongle with Zadig. OrcMesh runs fine without these —
+# the pages report them as unavailable.
 # pyrtlsdr>=0.3
+# PyOpenGL>=3.1.7

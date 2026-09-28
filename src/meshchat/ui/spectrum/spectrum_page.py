@@ -28,7 +28,9 @@ from meshchat.analytics.lora_bands import (
     meshcore_markers,
     meshtastic_markers,
 )
+from meshchat.services import rtl_tools
 from meshchat.ui.spectrum.waterfall_view import WaterfallView
+from meshchat.ui.widgets.levels_control import LevelsControl
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +86,22 @@ class SpectrumPage(QWidget):
         self._rate.setValue(2.40)
         self._rate.setFixedWidth(80)
         tb.addWidget(self._rate)
+
+        # Previously hardcoded to automatic, which on an RTL2832U resolves to
+        # near-maximum gain — the worst case for headroom, and it left the noise
+        # floor with nowhere for a signal to rise above it.
+        tb.addWidget(QLabel("Gain (dB):"))
+        self._gain = QDoubleSpinBox()
+        self._gain.setDecimals(1)
+        self._gain.setRange(0.0, 49.6)
+        self._gain.setValue(rtl_tools.DEFAULT_GAIN_DB)
+        self._gain.setFixedWidth(70)
+        self._gain.setToolTip(
+            "Tuner gain. The tuner snaps to its own steps, so the nearest of "
+            "these is what you get: "
+            + ", ".join(f"{step:g}" for step in rtl_tools.R820T_GAIN_STEPS)
+        )
+        tb.addWidget(self._gain)
 
         self._start_btn = QPushButton("Start")
         self._start_btn.setFixedWidth(70)
@@ -165,6 +183,9 @@ class SpectrumPage(QWidget):
         # ── Waterfall ──────────────────────────────────────────────────
         self._waterfall = WaterfallView()
         layout.addWidget(self._waterfall, 1)
+        # Display range with the waterfall it applies to: this is the control that
+        # recovers a spectrogram from looking like a solid block of one colour.
+        layout.addWidget(LevelsControl(self._waterfall))
 
         # ── Unavailable notice (shown when there's no usable SDR) ──────
         self._notice = QLabel("")
@@ -355,7 +376,7 @@ class SpectrumPage(QWidget):
 
         center_hz = self._center.value() * 1e6
         rate_hz = self._rate.value() * 1e6
-        self._sdr.start(center_hz, rate_hz, -1.0)  # -1 = automatic gain
+        self._sdr.start(center_hz, rate_hz, self._gain.value())
         self._running = True
         self._start_btn.setText("Stop")
         self._status.setText("Starting…")

@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, Qt, QSettings, QThread, QTimer, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -34,9 +35,12 @@ from meshchat.services import orcmaps
 from meshchat.services.connection_supervisor import ConnectionSupervisor
 from meshchat.services.monitor_store import MonitorStore
 from meshchat.services.packet_ingestor import PacketIngestor
+from meshchat.services.provisioning.capability import detect_capability
+from meshchat.services.provisioning.destinations import default_map_dir
 from meshchat.ui.chat_view import ChatView
 from meshchat.ui.monitor.monitor_page import MonitorPage
 from meshchat.ui.nodes.nodes_page import NodesPage
+from meshchat.ui.setup.setup_wizard import SetupWizard
 from meshchat.ui.theme import global_stylesheet
 from meshchat.ui.widgets.channel_list import ChannelList
 from meshchat.ui.widgets.connection_bar import ConnectionBar
@@ -49,6 +53,10 @@ _SETTINGS_KEY = "MeshChat/MainWindow"
 #: Persisted basemap choice: "online", or the stem of an OrcMaps pack.
 _BASEMAP_SETTINGS_KEY = "MeshChat/Map/source"
 _ONLINE_BASEMAP_LABEL = "Online · OpenStreetMap / CARTO tiles"
+
+#: Set once the setup wizard has been completed. Absent means "never offered",
+#: which is what makes a fresh install open the wizard exactly once.
+_SETUP_COMPLETE_KEY = "MeshChat/Setup/complete"
 
 
 # ── Packet export worker ──────────────────────────────────────────────────
@@ -123,6 +131,12 @@ class MainWindow(QMainWindow):
         self._pending_flash_backup = None
         self._pending_serial_console = None
         self._flash_port: str | None = None
+        #: Regions the setup wizard asked for, provisioned one at a time
+        #: because OrcMaps' controller runs a single operation at a time.
+        self._setup_region_queue: list[dict] = []
+        #: Last position reported for this radio, so setup and the pack cutter
+        #: can both offer "around here" without asking the radio twice.
+        self._last_local_position: tuple[float, float] | None = None
 
         # ── Central layout ────────────────────────────────────────────
         central = QWidget()
@@ -143,12 +157,13 @@ class MainWindow(QMainWindow):
         self._nav_monitor  = _NavButton("📡", "Monitor")
         self._nav_nodes    = _NavButton("🔵", "Nodes")
         self._nav_spectrum = _NavButton("📶", "Spectrum")
+        self._nav_sigint   = _NavButton("🛰", "SIGINT")
         self._nav_device   = _NavButton("⚙", "Device")
         self._nav_chat.setChecked(True)
 
         for btn in (
             self._nav_chat, self._nav_monitor, self._nav_nodes,
-            self._nav_spectrum, self._nav_device,
+            self._nav_spectrum, self._nav_sigint, self._nav_device,
         ):
             btn.setAutoExclusive(True)
             nav_layout.addWidget(btn)
@@ -221,6 +236,13 @@ class MainWindow(QMainWindow):
         from meshchat.ui.spectrum.spectrum_page import SpectrumPage
         self._spectrum_page = SpectrumPage()
 
+        # SIGINT page: spectrum, band survey and packet intelligence. Owns its own
+        # SDR controllers, because the dongle can only be held in one place at a
+        # time and the Spectrum tab has its own.
+        from meshchat.ui.sigint.sigint_page import SigintPage
+        self._sigint_page = SigintPage()
+        self._lora_summary = None
+
         from meshchat.ui.device.device_page import DevicePage
         self._device_page = DevicePage()
         self._device_page.refresh_requested.connect(self._controller.refresh_device_controls)
@@ -270,6 +292,7 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._nodes_page)      # index 2
         self._stack.addWidget(self._spectrum_page)   # index 3
         self._stack.addWidget(self._device_page)     # index 4
+        self._stack.addWidget(self._sigint_page)     # index 5
         content_layout.addWidget(self._stack, 1)
 
         root.addWidget(content, 1)
@@ -280,6 +303,7 @@ class MainWindow(QMainWindow):
         self._nav_nodes.clicked.connect(lambda: self._stack.setCurrentIndex(2))
         self._nav_spectrum.clicked.connect(lambda: self._stack.setCurrentIndex(3))
         self._nav_device.clicked.connect(lambda: self._stack.setCurrentIndex(4))
+        self._nav_sigint.clicked.connect(lambda: self._stack.setCurrentIndex(5))
 
         # ── Controller signals ────────────────────────────────────────
         ctrl = self._controller
@@ -290,6 +314,7 @@ class MainWindow(QMainWindow):
         ctrl.channels_updated.connect(self._monitor_page.set_channels)
         ctrl.lora_config_updated.connect(self._monitor_page.set_radio_config)
         ctrl.lora_config_updated.connect(self._spectrum_page.set_radio_config)
+        ctrl.lora_config_updated.connect(self._remember_lora_config)
         ctrl.message_received.connect(self._on_message_received)
         ctrl.message_status_changed.connect(self._on_message_status)
         ctrl.ble_scan_finished.connect(self._conn_bar.set_ble_devices)
@@ -334,12 +359,29 @@ class MainWindow(QMainWindow):
         self._nodes_dirty = False
         self._node_refresh_timer = QTimer(self)
         self._node_refresh_timer.timeout.connect(self._flush_node_updates)
+        # Shares the node-refresh tick rather than running a second timer: both
+        # exist to keep a lazily-updated table current.
+        self._node_refresh_timer.timeout.connect(self._refresh_sigint_intel)
         self._node_refresh_timer.start(2000)
 
         # Populate the map/node list from persisted history immediately, even
         # before connecting this session — matches the official Meshtastic
         # app always showing its saved NodeDB rather than starting blank.
-        self._ingestor.seed_from_store(self._store.read_nodes(), self._store.read_latest_positions())
+        stored_nodes = self._store.read_nodes()
+        #: Node numbers the NodeDB already held when this session began. The SIGINT
+        #: tab treats anything outside this set as unfamiliar, which is what makes
+        #: "a radio appeared that this mesh has no history with" answerable rather
+        #: than a guess.
+        self._known_node_nums = {
+            int(row["node_num"]) for row in stored_nodes
+            if row.get("node_num") is not None
+        }
+        self._node_labels = {
+            int(row["node_num"]): str(row.get("long_name") or row.get("short_name") or "")
+            for row in stored_nodes
+            if row.get("node_num") is not None
+        }
+        self._ingestor.seed_from_store(stored_nodes, self._store.read_latest_positions())
 
         # Trim old packet/position/telemetry rows once per launch. Without
         # this the monitor tables grow without bound for as long as the app
@@ -401,6 +443,13 @@ class MainWindow(QMainWindow):
         self._basemap_act.setToolTip("Choose the online basemap or an offline OrcMaps pack")
         self._basemap_act.triggered.connect(self._choose_basemap_source)
         map_menu.addAction(self._basemap_act)
+
+        map_menu.addSeparator()
+
+        setup_act = QAction("Set Up OrcMesh…", self)
+        setup_act.setToolTip("Choose your radio and install map regions for where you are")
+        setup_act.triggered.connect(lambda: self.maybe_run_first_run(force=True))
+        map_menu.addAction(setup_act)
 
         help_menu = menu_bar.addMenu("Help")
 
@@ -571,11 +620,150 @@ class MainWindow(QMainWindow):
         if success and operation == "provision":
             # The card's contents may have changed; keep the pack list honest.
             self._refresh_map_packs()
+        if operation == "provision" and self._setup_region_queue:
+            if not success and self._discover_map_packs()[0] is None:
+                # The tools themselves have gone away (checkout moved, drive
+                # unmounted). Draining avoids a modal dialog per queued region.
+                self._setup_region_queue.clear()
+                return
+            self._provision_next_setup_region()
 
     def _on_position_for_device_page(self, sample) -> None:
         """Keep the pack cutter's "around here" prefill current."""
         if sample.node_num is not None and sample.node_num == self._local_node_num:
+            self._last_local_position = (sample.latitude, sample.longitude)
             self._device_page.set_local_position(sample.latitude, sample.longitude)
+
+    def _remember_lora_config(self, summary) -> None:
+        """Hold the radio's modem preset for the SIGINT tab's airtime maths."""
+        self._lora_summary = summary
+
+    def _refresh_sigint_intel(self) -> None:
+        """Feed the SIGINT tab the traffic this session has heard.
+
+        Skipped while the tab is not on screen: analysing up to a session's worth
+        of packets every two seconds to update a table nobody is looking at would
+        be wasted work.
+        """
+        if self._stack.currentWidget() is not self._sigint_page:
+            return
+        summary = self._lora_summary
+        preset = None
+        if summary is not None and getattr(summary, "use_preset", False):
+            preset = getattr(summary, "modem_preset", None)
+        self._sigint_page.set_packets(
+            self._ingestor.get_recent_packets(),
+            known_nodes=self._known_node_nums,
+            labels=self._node_labels,
+            preset=preset,
+        )
+
+    # ------------------------------------------------------------------
+    # First-run setup
+    # ------------------------------------------------------------------
+
+    def maybe_run_first_run(self, force: bool = False) -> None:
+        """Offer the setup wizard on a fresh install.
+
+        Deliberately *not* called from ``__init__``: it opens a modal dialog,
+        and MainWindow is constructed all over the test suite. ``app.py`` calls
+        it once the window is on screen, and ``force`` lets the Map menu offer
+        it again at any time.
+
+        Not gated on "no map packs found" either — an upgrade that already has
+        packs still benefits from choosing a radio, and a developer's machine
+        with a full OrcMaps checkout is exactly where this needs to be
+        exercisable.
+        """
+        settings = QSettings()
+        if not force and settings.value(_SETUP_COMPLETE_KEY, False, type=bool):
+            return
+
+        tools, packs, _reason = self._discover_map_packs()
+        capability = detect_capability(tools, packs)
+        wizard = SetupWizard(capability, self)
+        wizard.set_destination(default_map_dir())
+        if self._last_local_position is not None:
+            wizard.set_centre(*self._last_local_position)
+
+        # The controller outlives the dialog, so these are wired for the
+        # dialog's lifetime only. A signal left connected to a destroyed
+        # widget raises the next time it fires — which here would be the next
+        # time the user pressed Scan, long after setup had closed.
+        ctrl = self._controller
+        ctrl.serial_ports_found.connect(wizard.set_serial_ports)
+        ctrl.ble_scan_finished.connect(wizard.set_ble_devices)
+        try:
+            # A finished setup should be remembered even if the user declined,
+            # or they are asked the same question on every single launch.
+            settings.setValue(_SETUP_COMPLETE_KEY, True)
+            accepted = wizard.exec() == QDialog.DialogCode.Accepted
+        finally:
+            ctrl.serial_ports_found.disconnect(wizard.set_serial_ports)
+            ctrl.ble_scan_finished.disconnect(wizard.set_ble_devices)
+
+        if accepted:
+            self._apply_setup_choice(wizard)
+
+    def _apply_setup_choice(self, wizard: SetupWizard) -> None:
+        """Apply what the wizard collected: radio first, then the regions."""
+        transport, target = wizard.selected_device()
+        if target:
+            profile = ConnectionProfile(transport=transport)
+            if transport == "ble":
+                profile.ble_address = target
+            else:
+                profile.serial_port = target
+            # Prefilled rather than auto-connected: a Bluetooth connect takes
+            # ~25 s and belongs behind the user's own press of Connect.
+            self._conn_bar.restore_profile(profile)
+            self._status_bar.showMessage(
+                f"Setup saved {transport} device {target} — press Connect to link it", 15000
+            )
+
+        capability = wizard.capability()
+        queued = 0
+        for region in wizard.regions():
+            source = capability.source_for(int(region["max_zoom"]))
+            if source is None:
+                # Deepest available source is shallower than the tier asked
+                # for. Say so per region rather than silently cutting a
+                # coarser map under the user's chosen name.
+                log.info(
+                    "Setup region %s wants z%d; no source deep enough", region["name"],
+                    region["max_zoom"],
+                )
+                self._status_bar.showMessage(
+                    f"'{region['name']}' needs z{region['max_zoom']} detail, which no "
+                    "available source pack has — skipped", 15000,
+                )
+                continue
+            self._setup_region_queue.append({
+                "source_manifest": source.manifest,
+                "lat": region["lat"],
+                "lon": region["lon"],
+                "radius_km": region["radius_km"],
+                "name": region["name"],
+                "display_name": region["name"],
+                "card_root": wizard.destination(),
+            })
+            queued += 1
+
+        if queued:
+            self._status_bar.showMessage(
+                f"Building {queued} region pack(s) — this can take a few minutes", 15000
+            )
+            self._provision_next_setup_region()
+
+    def _provision_next_setup_region(self) -> None:
+        """Start the next queued region, or stop when the queue is empty.
+
+        OrcMaps' controller runs one operation at a time, so this is driven by
+        the completion signal rather than by a loop.
+        """
+        if not self._setup_region_queue:
+            return
+        self._provision_map_pack(self._setup_region_queue.pop(0))
 
     # ------------------------------------------------------------------
     # Export
@@ -1147,6 +1335,7 @@ class MainWindow(QMainWindow):
         settings = QSettings()
         settings.setValue(f"{_SETTINGS_KEY}/geometry", self.saveGeometry())
         self._spectrum_page.shutdown()
+        self._sigint_page.shutdown()
         self._firmware_controller.shutdown()
         # Stops the offline basemap's tile server thread (OrcMaps renders).
         self._monitor_page.shutdown_map()
