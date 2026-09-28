@@ -7,7 +7,6 @@ with no radio attached to anything.
 from __future__ import annotations
 
 from dataclasses import dataclass
-
 #: How a transport actually reaches the radio. The two ``ip:`` forms have to be told
 #: apart: they are indistinguishable in a URI list and are 3x apart in measured
 #: throughput, so treating them as one thing would silently choose the slow path.
@@ -67,6 +66,74 @@ class RfTransport:
 
 
 @dataclass(frozen=True)
+class MeasuredLimit:
+    """What a transport was measured doing, as opposed to what it can be configured for.
+
+    Recorded as data rather than left in prose so the orchestrator budgets from the same
+    numbers the audit reports — and tagged with the conditions, so nobody mistakes them
+    for a datasheet.
+    """
+
+    lossless_rate_hz: float
+    sustained_mb_per_s: float
+    reliable: bool
+    note: str = ""
+
+
+#: Measured on this bench, 2026-09-27, by injecting a BIST tone and counting phase
+#: discontinuities — see ``docs/rf-observatory/PHASE-0-AUDIT.md``. The point of holding
+#: both a rate and a reliability flag is that they disagree: raw ``usb:`` is the fastest
+#: of the three in its one completed run and is also the one that dropped the board off
+#: the bus twice, so the fastest transport is not the one to choose.
+MEASURED_LIMITS: dict[str, MeasuredLimit] = {
+    ETHERNET: MeasuredLimit(
+        lossless_rate_hz=15_000_000,
+        sustained_mb_per_s=49.5,
+        reliable=True,
+        note="60 s soak at 10 MSPS: 1.004x real time, 39.8 MB/s",
+    ),
+    USB_GADGET: MeasuredLimit(
+        lossless_rate_hz=5_000_000,
+        sustained_mb_per_s=19.9,
+        reliable=True,
+        note="60 s soak at 5 MSPS: 1.007x real time",
+    ),
+    USB: MeasuredLimit(
+        lossless_rate_hz=5_000_000,
+        sustained_mb_per_s=30.3,
+        reliable=False,
+        note="one completed run; wedged the board and dropped it off the bus twice",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class RfCapabilities:
+    """What a receiver can be configured to do.
+
+    Deliberately *not* the same thing as what it was measured doing: those live in
+    :data:`MEASURED_LIMITS` and in the ``tested_`` fields, because the gap between the two
+    is the single most expensive misunderstanding in this hardware. This board advertises
+    61.44 MSPS and streams 15; the same vendor's docs concede the general case — *"What you
+    will actually get is set by the link to your host, not by the board."*
+    """
+
+    min_rate_hz: float | None = None
+    max_rate_hz: float | None = None
+    rate_step_hz: float | None = None
+    min_gain_db: float | None = None
+    max_gain_db: float | None = None
+    gain_step_db: float | None = None
+    max_bandwidth_hz: float | None = None
+    #: Significant bits per I or Q sample, and the bytes each one occupies on the wire.
+    #: 12-in-16 is why one complex sample costs 4 bytes and not 3, which every throughput
+    #: figure in the audit divides by.
+    bits: int | None = None
+    bytes_per_complex_sample: int | None = None
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RfDeviceInfo:
     """One physical radio, however many ways there are to reach it."""
 
@@ -83,6 +150,14 @@ class RfDeviceInfo:
     tx: bool = False
     transports: tuple[RfTransport, ...] = ()
     notes: tuple[str, ...] = ()
+    #: Filled by a probe, never by discovery: listing a device must not open it, because
+    #: opening takes seconds and fails while something else holds it.
+    capabilities: RfCapabilities | None = None
+
+    def measured_limit(self) -> MeasuredLimit | None:
+        """What the best transport to this device was measured sustaining."""
+        transport = self.streaming_transport()
+        return MEASURED_LIMITS.get(transport.kind) if transport is not None else None
 
     @property
     def uris(self) -> tuple[str, ...]:

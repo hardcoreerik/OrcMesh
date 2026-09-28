@@ -9,26 +9,44 @@ for the same reason ``rtl_test -t`` enumerates dongles instead of opening one. C
 receiver takes seconds and fails while something else holds it, so a listing that
 claimed one would be unusable as a refresh.
 
-Scope so far is identity and transport, which is what the measurements demanded. The
-capability model (rates, gains, bandwidths, timestamping) and the backends that stream
-come next — see ``docs/rf-observatory/PHASE-0-AUDIT.md``.
+Scope so far is identity, transport and capability. The backends that actually stream — and
+the block accounting that makes their degradation visible — come next; see
+``docs/rf-observatory/PHASE-0-AUDIT.md``.
 """
 from __future__ import annotations
 
-from .base import ETHERNET, LOCAL, USB, USB_GADGET, PREFERENCE, RfDeviceInfo, RfTransport
+from .base import (
+    ETHERNET,
+    LOCAL,
+    MEASURED_LIMITS,
+    PREFERENCE,
+    USB,
+    USB_GADGET,
+    MeasuredLimit,
+    RfCapabilities,
+    RfDeviceInfo,
+    RfTransport,
+)
+from .capabilities import parse_range, parse_sample_format, probe_libiio
 from .registry import IioContext, discover, parse_contexts, pluto_devices, rtl_devices
 
 __all__ = [
     "ETHERNET",
     "LOCAL",
+    "MEASURED_LIMITS",
     "PREFERENCE",
     "USB",
     "USB_GADGET",
     "IioContext",
+    "MeasuredLimit",
+    "RfCapabilities",
     "RfDeviceInfo",
     "RfTransport",
     "discover",
     "parse_contexts",
+    "parse_range",
+    "parse_sample_format",
     "pluto_devices",
+    "probe_libiio",
     "rtl_devices",
 ]

@@ -485,6 +485,20 @@ not copy its code in. Vivado/Vitis and AMD IP are proprietary and irrelevant her
    ten trios drops the peak from −31.91 to −36.43 dB). Occupancy conclusions inherit this today.
 7. **Per-receiver absolute power is not comparable** without per-device calibration: two dongles
    differ in gain table, front end and filtering, and `rtl_power`'s dB scale is not absolute.
+8. **What a device advertises is not what it will do, in both directions.** The Pluto reports a
+   minimum sample rate of 2,083,333 Hz that this firmware **silently refuses** — requests below
+   about 3 MSPS are rejected and the device keeps its previous rate, with no error. At the other
+   end it accepts its full 61,440,000 Hz while the link discards roughly three quarters of the
+   samples. A capability therefore has to carry **two** numbers, the device's claim and the
+   measured limit, and the UI has to be able to show both. `MEASURED_LIMITS` in
+   `services/rf/base.py` holds the measured half; `probe_libiio` fills the claimed half.
+9. **The sample format must be read from the receive DMA, not from the listing.** `iio_info`
+   prints the transmit DMA (`cf-ad9361-dds-core-lpc`, `le:S16/16`) *before* the receive one
+   (`cf-ad9361-lpc`, `le:S12/16`). Reading the first `format:` in the output — the obvious
+   implementation, and the one this probe shipped with for one run — reports a **16-bit
+   receiver**. The live probe on this board returned exactly that until it was corrected. The
+   truth is 12 bits in a 16-bit container, so a complex sample is 4 bytes and every throughput
+   figure here divides by 4.
 
 ---
 
@@ -606,3 +620,5 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | Pluto clone: retune latency | **Measured** | 51 ms cold, ~33 ms steady state, read-back confirmed |
 | Pluto clone: dropped samples | **Measured** | USB: 0 jumps at 3 and 5 MSPS, 4 at 10 rising to 27 at 40. Ethernet: 0 at 5, 10 and 15 MSPS, first drops at 20 |
 | Pluto clone: Ethernet path | **Working and measured** | pinned at `192.168.1.50` by a static `ipaddr_eth`; the cause was a churning DHCP address, not a service-binding fault |
+| Pluto clone: capability probe | **Verified on hardware** | `2,083,333 .. 61,440,000 Hz`, gain `-1 .. 73 dB`, bandwidth to `56 MHz`, **12 bits in 16-bit containers = 4 bytes/complex**; the 12-bit answer only appeared after the receive-DMA fix |
+| Capability probe never raises | **Verified** | a runner that fails degrades to an empty attribute plus a note; probing a wedged board must not throw from a listing refresh |
