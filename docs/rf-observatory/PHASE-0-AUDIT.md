@@ -602,8 +602,23 @@ not copy its code in. Vivado/Vitis and AMD IP are proprietary and irrelevant her
    relaunching `rtl_sdr` per step is not viable.
 6. **`rtl_power` artefacts are measured, not theoretical:** a **3-bin (243.75 kHz) artefact at
    every row centre, +4.33..+5.89 dB, in 200/200 rows**, and a ~−3.2 dB IF-filter droop at each
-   row's edges. In a quiet survey the artefact is **the brightest thing present** (masking the
-   ten trios drops the peak from −31.91 to −36.43 dB). Occupancy conclusions inherit this today.
+   row's edge. In a quiet survey the artefact is **the brightest thing present** (masking the
+   ten trios drops the peak from −31.91 to −36.43 dB).
+   **The centre trio is now corrected** (`rtl_scan.repair_row_artefact`), per row during the
+   merge — after stitching there is no way to tell a row's centre from anywhere else in the
+   band. Two thresholds, and both would cause damage if moved for tidiness: a **ceiling at
+   8 dB**, because a survey cannot separate a carrier from the artefact by shape but can by
+   size (the artefact never exceeds 5.9 dB), and that ceiling must sit *above* the artefact or
+   a 3 dB guard would classify it as a carrier and preserve exactly what the fix removes; and a
+   **floor at 2 dB**, because the artefact was never once negative, so a centre differing from
+   its shoulders only by noise must be left alone — without the floor every quiet row was
+   "corrected", replacing honest samples with an invented estimate. That second one was caught
+   by a test asserting a quiet row is not touched.
+   **The edge droop is still not corrected, deliberately.** A fixed −3.2 dB offset was measured
+   at one bandwidth, gain and sample rate, and applying it blindly would distort real signals
+   near a row's edge on any other setting. It remains a documented caveat: a 250 kHz slot
+   landing on a row boundary reads about 3 dB cooler than one mid-row, so compare slots within
+   a row before comparing across one. Occupancy conclusions inherit this today.
 7. **Per-receiver absolute power is not comparable** without per-device calibration: two dongles
    differ in gain table, front end and filtering, and `rtl_power`'s dB scale is not absolute.
 8. **What a device advertises is not what it will do, in both directions.** The Pluto reports a
@@ -731,7 +746,15 @@ Sequenced so that measured defects are fixed before abstractions are built on to
 | Device enumeration, busy path | **Verified** | "name unreadable (blank EEPROM, or the device is in use)" |
 | DC/LO repair in `iq_to_power_row` | **Verified** | centre −0.02 dB vs neighbours, was +10.7 dB |
 | `rtl_power` band survey | **Verified** | 200 rows, 33 bins, 81.25 kHz, 0% non-finite |
-| `rtl_power` centre-trio artefact | **Measured, not fixed** | +4.33..+5.89 dB, 200/200 rows, 3 bins |
+| `rtl_power` centre-trio artefact | **Corrected** | was `+4.33..+5.89 dB in 200/200 rows, not fixed`; now repaired per row during the merge, with a ceiling above the artefact and a floor below it |
+| `rtl_power` row-edge droop | **Measured, deliberately not corrected** | ~−3.2 dB at one bandwidth/gain/rate; applying a fixed offset measured on one setting would distort real signals on any other |
+| Pluto transmit: DDS tone | **Does not radiate** | attenuator read back 0 dB, TX LO 905.874998 MHz, DDS scale 0.75 — every register held, **no carrier at 906.875 MHz** |
+| Pluto transmit: cyclic stream | **Does not radiate** | `iio_writedev -c` (cyclic, correct syntax, device positional) produced nothing either |
+| Pluto transmit: other bands | **Nothing at 906.875 or 433.92 MHz** | widths stayed at the full 2048 kHz capture span, which is what noise looks like; 2.45 GHz untestable with an RTL-SDR |
+| Pluto transmit: on-chip diagnostics | **Unavailable** | `loopback` and RX `rf_port_select = TX_MONITOR1` both exist and both **refuse the write** (rc=1) |
+| Pluto transmit: TX power detector | **Inconclusive** | reads 0.00 dB in every state, which may only mean the detector is not enabled |
+| Pluto transmit: independent confirmation | **Two observers agree** | the operator's own receiver saw nothing, as did the RTL-SDR |
+| SIGINT analysis modes | **Implemented** | peak hold, occupancy, envelope, channel slots, event log — over the same row stream the waterfall draws |
 | 3D waterfall rendering | **Verified** | distinct framebuffer colours 1 → 2851 |
 | Simultaneous capture on both dongles | **Not yet done** | blocked by SIGINT's capture/scan exclusion |
 | Multi-radio Meshtastic | **Not possible today** | radios are mutually exclusive by construction |

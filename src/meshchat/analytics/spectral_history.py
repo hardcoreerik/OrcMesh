@@ -316,6 +316,55 @@ class BurstDetector:
         return self._row_index
 
 
+def spectrum_csv(history: SpectralHistory, *, centre_hz: float, span_hz: float) -> str:
+    """The per-bin statistics as CSV, with the frequency of every row.
+
+    Written out with its own frequency column rather than as bare numbers, because evidence
+    that cannot be read without the program that produced it is not much evidence. Every column
+    is something the modes draw, so the file and the screen agree by construction.
+    """
+    freqs = (centre_hz - span_hz / 2
+             + (np.arange(history.bins) + 0.5) * (span_hz / history.bins))
+    bands = history.percentiles()
+    header = "frequency_hz\tpeak_db\tmin_db\tp5_db\tp50_db\tp95_db\toccupancy\n"
+    lines = [header]
+    peak = history.peak_hold()
+    low = history.min_hold()
+    duty = history.occupancy()
+    for index in range(history.bins):
+        def show(value: float) -> str:
+            return "" if not np.isfinite(value) else f"{value:.3f}"
+        lines.append(
+            f"{freqs[index]:.0f}\t{show(peak[index])}\t{show(low[index])}\t"
+            f"{show(bands[5.0][index])}\t{show(bands[50.0][index])}\t"
+            f"{show(bands[95.0][index])}\t{duty[index]:.4f}\n",
+        )
+    return "".join(lines)
+
+
+def bursts_csv(bursts: list[Burst], *, centre_hz: float, span_hz: float,
+               bins: int, row_seconds: float) -> str:
+    """The burst log as CSV, with frequencies rather than bin indices.
+
+    Bin indices are what the detector works in and are useless a day later; the file carries
+    frequencies and seconds so it stands on its own.
+    """
+    if bins <= 0:
+        return "start_s\tend_s\tlow_hz\thigh_hz\tbandwidth_hz\tpeak_db\tover_floor_db\n"
+    bin_hz = span_hz / bins
+    low_hz = centre_hz - span_hz / 2
+    lines = ["start_s\tend_s\tlow_hz\thigh_hz\tbandwidth_hz\tpeak_db\tover_floor_db\n"]
+    for burst in bursts:
+        lines.append(
+            f"{burst.start_row * row_seconds:.4f}\t{(burst.end_row + 1) * row_seconds:.4f}\t"
+            f"{low_hz + burst.first_bin * bin_hz:.0f}\t"
+            f"{low_hz + (burst.last_bin + 1) * bin_hz:.0f}\t"
+            f"{burst.bin_span * bin_hz:.0f}\t{burst.peak_db:.3f}\t"
+            f"{burst.over_floor_db:.3f}\n",
+        )
+    return "".join(lines)
+
+
 def slot_power_grid(
     rows: list[np.ndarray] | np.ndarray,
     *,

@@ -32,8 +32,10 @@ import pyqtgraph as pg
 from PySide6.QtCore import QRectF, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -43,7 +45,9 @@ from meshchat.analytics.spectral_history import (
     Burst,
     BurstDetector,
     SpectralHistory,
+    bursts_csv,
     slot_power_grid,
+    spectrum_csv,
 )
 
 log = logging.getLogger(__name__)
@@ -106,6 +110,7 @@ class AnalysisView(QWidget):
         self._bursts: list[Burst] = []
         self._row_seconds = 0.0
         self._dirty = False
+        self._frozen = False
         self._build()
 
         self._timer = QTimer(self)
@@ -146,6 +151,29 @@ class AnalysisView(QWidget):
         )
         self._reset_btn.clicked.connect(self.reset)
         row.addWidget(self._reset_btn)
+
+        # Freeze holds the accumulated picture while the capture keeps running. A live view is
+        # the wrong thing to read numbers off: the row you are looking at is gone by the time
+        # you have read it, and comparing anything means being able to stop.
+        self._freeze_btn = QPushButton("Freeze")
+        self._freeze_btn.setFixedWidth(66)
+        self._freeze_btn.setCheckable(True)
+        self._freeze_btn.setToolTip(
+            "Stop folding new rows in, so the picture holds still while the capture keeps\n"
+            "running. Peak hold and occupancy describe the whole session, so freezing does\n"
+            "not change what they say — it stops them changing while you read them.",
+        )
+        self._freeze_btn.toggled.connect(self._on_freeze_toggled)
+        row.addWidget(self._freeze_btn)
+
+        self._export_btn = QPushButton("Export")
+        self._export_btn.setFixedWidth(66)
+        self._export_btn.setToolTip(
+            "Write the per-bin statistics and the event log to two CSV files, with\n"
+            "frequencies and seconds rather than bin indices so the evidence stands alone.",
+        )
+        self._export_btn.clicked.connect(self._on_export)
+        row.addWidget(self._export_btn)
 
         self._counts = QLabel("")
         self._counts.setStyleSheet("color: #5A6690; font-size: 11px;")
@@ -191,6 +219,8 @@ class AnalysisView(QWidget):
 
     def push_row(self, row: np.ndarray) -> None:
         """Fold one spectrum in. Cheap: the drawing happens on the timer, not here."""
+        if self._frozen:
+            return
         if self._history is None or self._detector is None:
             return
         values = np.asarray(row)
@@ -201,6 +231,47 @@ class AnalysisView(QWidget):
         if len(self._bursts) > MAX_BURSTS:
             del self._bursts[: len(self._bursts) - MAX_BURSTS]
         self._dirty = True
+
+    @property
+    def is_frozen(self) -> bool:
+        return self._frozen
+
+    def _on_freeze_toggled(self, frozen: bool) -> None:
+        self._frozen = bool(frozen)
+        self._freeze_btn.setText("Resume" if self._frozen else "Freeze")
+
+    def _on_export(self) -> None:
+        """Ask for a name, then write both files beside it."""
+        if self._history is None or self._history.observed == 0:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "No spectra have been folded in yet, so there is no evidence to write.",
+            )
+            return
+        chosen, _ = QFileDialog.getSaveFileName(
+            self, "Export analysis", "sigint-analysis.csv", "CSV (*.csv)",
+        )
+        if not chosen:
+            return
+        base = chosen[:-4] if chosen.lower().endswith(".csv") else chosen
+        wrote: list[str] = []
+        try:
+            for suffix, text in (
+                ("spectrum", spectrum_csv(self._history, centre_hz=self._centre_hz,
+                                           span_hz=self._span_hz)),
+                ("events", bursts_csv(self._bursts, centre_hz=self._centre_hz,
+                                      span_hz=self._span_hz, bins=self._bins,
+                                      row_seconds=self._row_seconds or 1.0)),
+            ):
+                path = f"{base}-{suffix}.csv"
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(text)
+                wrote.append(path)
+        except OSError as exc:
+            QMessageBox.critical(self, "Could not export", str(exc))
+            return
+        log.info("Exported analysis to %s", ", ".join(wrote))
+        QMessageBox.information(self, "Exported", "\n".join(wrote))
 
     def reset(self) -> None:
         """Forget the accumulated history. Called by the button and on a retune."""
