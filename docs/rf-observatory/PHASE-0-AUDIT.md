@@ -286,8 +286,22 @@ enough for gap-free retune-scanning of a whole band.
 USB-gadget address. The board is on the network but its services are not bound to the Ethernet
 address, and libiio's scan still lists only `192.168.2.1`. Most likely the interface carries the
 firmware's own default `192.168.2.1` (which the services bind to) alongside a DHCP lease, or it needs
-a reboot with the cable present. **Until that is resolved the fast path cannot be used, and every
-throughput figure above is a USB-gadget figure.**
+**A power cycle with the cable attached does not change this** (tested 2026-09-27: the board rebooted —
+its USB address moved `1.62.5` → `1.64.5` — and the LAN behaviour was identical), so it is a
+configuration state rather than boot timing. The board's `eth0` holds **both `192.168.2.1` and
+`192.168.1.202`**, appearing in the host's neighbour table under a single MAC (`58-d9-d5-1d-f0-47`), while
+the USB gadget carries the same `192.168.2.1` under a different MAC (`00-05-f7-19-e7-93`). That points at
+the services being bound to `192.168.2.1`, which the host reaches over the **gadget** route — so OrcMesh
+has been talking to the USB gadget all along, and the Ethernet interface's copy of that address is not
+reachable without an explicit host route. Confirming it needs the board's own view (`ip -brief addr`,
+`ss -lnt`) over the gadget SSH, which requires the root password.
+
+Note also that the board's port 80 serves **ADI's stock static Pluto web page**: it contains the vendor's
+own tutorial text (a developer's shell prompt, `rgetz@brain`), so its "kernel 4.9.0 … 2018" line is
+boilerplate and **not** this board. The live value is the IIO context attribute `local,kernel: 5.15.0`.
+
+**Until that is resolved the fast path cannot be used, and every throughput figure above is a
+USB-gadget figure.**
 
 **Dropped samples and behaviour above 10 MSPS — now measured** (2026-09-27, `ip:` transport). There
 is no drop counter in the toolchain, so this uses the phase-continuity method the firmware project
